@@ -22,6 +22,12 @@ type ProductData = {
   revenue: number
 }
 
+type Insight = {
+  type: 'positive' | 'warning' | 'neutral'
+  title: string
+  message: string
+}
+
 function App() {
   const [dashboard, setDashboard] = useState<DashboardData>({
     total_units: 0,
@@ -32,6 +38,7 @@ function App() {
 
   const [sales, setSales] = useState<SalesData[]>([])
   const [products, setProducts] = useState<ProductData[]>([])
+  const [insights, setInsights] = useState<Insight[]>([])
 
   useEffect(() => {
     // Get dashboard KPI data
@@ -81,9 +88,123 @@ function App() {
       .catch((error) => {
         console.error('Failed to fetch products:', error)
       })
+
+    // Get AI-generated insights
+    fetch('http://127.0.0.1:8100/api/insights')
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('Failed to fetch AI insights')
+        }
+
+        return response.json()
+      })
+      .then((data: Insight[]) => {
+        setInsights(data)
+      })
+      .catch((error) => {
+        console.error('Failed to fetch AI insights:', error)
+      })
   }, [])
 
-  // Use the largest value to calculate bar heights dynamically.
+  /*
+   * ---------------------------------------------------------
+   * DYNAMIC KPI CALCULATIONS
+   * ---------------------------------------------------------
+   */
+
+  const midpoint = Math.floor(sales.length / 2)
+
+  const previousSalesPeriod =
+    sales.length > 1
+      ? sales.slice(0, midpoint)
+      : []
+
+  const currentSalesPeriod =
+    sales.length > 1
+      ? sales.slice(midpoint)
+      : []
+
+  const previousUnits = previousSalesPeriod.reduce(
+    (total, item) => total + item.actual_units,
+    0,
+  )
+
+  const currentUnits = currentSalesPeriod.reduce(
+    (total, item) => total + item.actual_units,
+    0,
+  )
+
+  const previousRevenue = previousSalesPeriod.reduce(
+    (total, item) => total + item.revenue,
+    0,
+  )
+
+  const currentRevenue = currentSalesPeriod.reduce(
+    (total, item) => total + item.revenue,
+    0,
+  )
+
+  const unitsChange =
+    previousUnits > 0
+      ? ((currentUnits - previousUnits) / previousUnits) * 100
+      : 0
+
+  const revenueChange =
+    previousRevenue > 0
+      ? ((currentRevenue - previousRevenue) / previousRevenue) * 100
+      : 0
+
+  /*
+   * Forecast accuracy comparison.
+   *
+   * The backend currently returns overall accuracy.
+   * We calculate first-half vs second-half accuracy
+   * using the available sales data.
+   */
+
+  const calculateAccuracy = (data: SalesData[]) => {
+    const totalActual = data.reduce(
+      (total, item) => total + item.actual_units,
+      0,
+    )
+
+    if (totalActual === 0) {
+      return 0
+    }
+
+    const totalError = data.reduce(
+      (total, item) =>
+        total +
+        Math.abs(
+          item.actual_units - item.forecast_units,
+        ),
+      0,
+    )
+
+    return (1 - totalError / totalActual) * 100
+  }
+
+  const previousAccuracy =
+    previousSalesPeriod.length > 0
+      ? calculateAccuracy(previousSalesPeriod)
+      : 0
+
+  const currentAccuracy =
+    currentSalesPeriod.length > 0
+      ? calculateAccuracy(currentSalesPeriod)
+      : 0
+
+  const accuracyChange =
+    previousAccuracy > 0
+      ? currentAccuracy - previousAccuracy
+      : 0
+
+  /*
+   * ---------------------------------------------------------
+   * SALES CHART
+   * ---------------------------------------------------------
+   */
+
   const maxSalesValue =
     sales.length > 0
       ? Math.max(
@@ -94,7 +215,12 @@ function App() {
         )
       : 200
 
-  // Revenue chart calculations
+  /*
+   * ---------------------------------------------------------
+   * REVENUE CHART
+   * ---------------------------------------------------------
+   */
+
   const chartWidth = 500
   const chartHeight = 180
   const chartPadding = 8
@@ -109,7 +235,10 @@ function App() {
       ? Math.min(...sales.map((item) => item.revenue))
       : 0
 
-  const revenueRange = Math.max(maxRevenue - minRevenue, 1)
+  const revenueRange = Math.max(
+    maxRevenue - minRevenue,
+    1,
+  )
 
   const revenuePoints = sales.map((item, index) => {
     const x =
@@ -140,21 +269,59 @@ function App() {
       ? `${revenueLinePoints} ${chartWidth - chartPadding},${chartHeight} ${chartPadding},${chartHeight}`
       : ''
 
+  /*
+   * ---------------------------------------------------------
+   * FORMATTING HELPERS
+   * ---------------------------------------------------------
+   */
+
+  const formatChange = (value: number) => {
+    const sign = value > 0 ? '+' : ''
+    return `${sign}${value.toFixed(1)}%`
+  }
+
+  const changeClass = (value: number) => {
+    if (value > 0) {
+      return 'positive'
+    }
+
+    if (value < 0) {
+      return 'negative'
+    }
+
+    return 'neutral'
+  }
+
   return (
     <div className="app">
+
       {/* SIDEBAR */}
+
       <aside className="sidebar">
+
         <div className="brand">
-          <div className="brand-mark">M</div>
+
+          <div className="brand-mark">
+            M
+          </div>
 
           <div>
-            <div className="brand-name">MISSUBIBI</div>
-            <div className="brand-subtitle">Sales Intelligence</div>
+            <div className="brand-name">
+              MISSUBIBI
+            </div>
+
+            <div className="brand-subtitle">
+              Sales Intelligence
+            </div>
           </div>
+
         </div>
 
         <nav className="navigation">
-          <div className="nav-section-title">MAIN</div>
+
+          <div className="nav-section-title">
+            MAIN
+          </div>
 
           <button className="nav-item active">
             <span>▦</span>
@@ -194,66 +361,118 @@ function App() {
             <span>◎</span>
             Forecast Accuracy
           </button>
+
         </nav>
 
         <div className="model-status">
+
           <span className="status-dot" />
 
           <div>
-            <strong>AI Model Online</strong>
-            <span>Last updated just now</span>
+            <strong>
+              AI Model Online
+            </strong>
+
+            <span>
+              Last updated just now
+            </span>
           </div>
+
         </div>
+
       </aside>
 
       {/* MAIN CONTENT */}
+
       <main className="main">
+
         {/* HEADER */}
+
         <header className="header">
+
           <div>
+
             <div className="breadcrumb">
               DASHBOARD / OVERVIEW
             </div>
 
-            <h1>Sales Intelligence Dashboard</h1>
+            <h1>
+              Sales Intelligence Dashboard
+            </h1>
 
             <p>
               AI-powered sales order forecasting and analysis
             </p>
+
           </div>
 
           <div className="header-right">
+
             <button className="period-selector">
               FY2025
               <span>⌄</span>
             </button>
 
-            <div className="user-avatar">GS</div>
+            <div className="user-avatar">
+              GS
+            </div>
+
           </div>
+
         </header>
 
         {/* KPI CARDS */}
+
         <section className="kpi-grid">
+
+          {/* TOTAL UNITS */}
+
           <div className="kpi-card">
+
             <div className="kpi-header">
-              <span>Total Units</span>
-              <div className="kpi-icon">▦</div>
+
+              <span>
+                Total Units
+              </span>
+
+              <div className="kpi-icon">
+                ▦
+              </div>
+
             </div>
 
             <div className="kpi-value">
               {dashboard.total_units.toLocaleString()}
             </div>
 
-            <div className="kpi-change positive">
-              ↑ 8.4%
-              <span>vs previous period</span>
+            <div
+              className={`kpi-change ${changeClass(
+                unitsChange,
+              )}`}
+            >
+              {formatChange(unitsChange)}
+
+              <span>
+                vs previous period
+              </span>
             </div>
+
           </div>
 
+          {/* REVENUE */}
+
           <div className="kpi-card">
+
             <div className="kpi-header">
-              <span>Forecast Revenue</span>
-              <div className="kpi-icon">¥</div>
+
+              <span>
+                Forecast Revenue
+              </span>
+
+              <div className="kpi-icon">
+                ¥
+              </div>
+
             </div>
 
             <div className="kpi-value">
@@ -264,32 +483,68 @@ function App() {
               M
             </div>
 
-            <div className="kpi-change positive">
-              ↑ 6.2%
-              <span>vs previous period</span>
+            <div
+              className={`kpi-change ${changeClass(
+                revenueChange,
+              )}`}
+            >
+              {formatChange(revenueChange)}
+
+              <span>
+                vs previous period
+              </span>
             </div>
+
           </div>
 
+          {/* FORECAST ACCURACY */}
+
           <div className="kpi-card">
+
             <div className="kpi-header">
-              <span>Forecast Accuracy</span>
-              <div className="kpi-icon">◎</div>
+
+              <span>
+                Forecast Accuracy
+              </span>
+
+              <div className="kpi-icon">
+                ◎
+              </div>
+
             </div>
 
             <div className="kpi-value">
               {dashboard.forecast_accuracy.toFixed(1)}%
             </div>
 
-            <div className="kpi-change positive">
-              ↑ 2.1%
-              <span>model performance</span>
+            <div
+              className={`kpi-change ${changeClass(
+                accuracyChange,
+              )}`}
+            >
+              {formatChange(accuracyChange)}
+
+              <span>
+                model performance
+              </span>
             </div>
+
           </div>
 
+          {/* TOP PRODUCT */}
+
           <div className="kpi-card">
+
             <div className="kpi-header">
-              <span>Top Product</span>
-              <div className="kpi-icon">★</div>
+
+              <span>
+                Top Product
+              </span>
+
+              <div className="kpi-icon">
+                ★
+              </div>
+
             </div>
 
             <div className="kpi-value product-kpi">
@@ -297,50 +552,89 @@ function App() {
             </div>
 
             <div className="kpi-change neutral">
+
               Top revenue product
-              <span>based on current data</span>
+
+              <span>
+                based on current data
+              </span>
+
             </div>
+
           </div>
+
         </section>
 
         {/* CHARTS */}
+
         <section className="charts-grid">
+
           {/* SALES CHART */}
+
           <div className="panel sales-panel">
+
             <div className="panel-header">
+
               <div>
-                <h2>Sales Performance</h2>
-                <p>Actual vs forecast units</p>
+
+                <h2>
+                  Sales Performance
+                </h2>
+
+                <p>
+                  Actual vs forecast units
+                </p>
+
               </div>
 
               <button className="panel-button">
                 Monthly ⌄
               </button>
+
             </div>
 
             <div className="sales-chart">
+
               <div className="y-axis">
+
                 <span>
                   {Math.ceil(maxSalesValue / 50) * 50}
                 </span>
 
                 <span>
-                  {Math.ceil(maxSalesValue / 50) * 50 - 50}
+                  {Math.max(
+                    Math.ceil(maxSalesValue / 50) * 50 -
+                      50,
+                    0,
+                  )}
                 </span>
 
                 <span>
-                  {Math.ceil(maxSalesValue / 50) * 50 - 100}
+                  {Math.max(
+                    Math.ceil(maxSalesValue / 50) * 50 -
+                      100,
+                    0,
+                  )}
                 </span>
 
                 <span>
-                  {Math.ceil(maxSalesValue / 50) * 50 - 150}
+                  {Math.max(
+                    Math.ceil(maxSalesValue / 50) * 50 -
+                      150,
+                    0,
+                  )}
                 </span>
 
-                <span>0</span>
+                <span>
+                  0
+                </span>
+
               </div>
 
               <div className="chart-container">
+
                 <div className="horizontal-lines">
+                  <span />
                   <span />
                   <span />
                   <span />
@@ -349,8 +643,11 @@ function App() {
                 </div>
 
                 <div className="bar-chart">
+
                   {sales.length > 0 ? (
+
                     sales.map((item) => {
+
                       const actualHeight =
                         (item.actual_units /
                           maxSalesValue) *
@@ -366,6 +663,7 @@ function App() {
                           className="bar-group"
                           key={item.month}
                         >
+
                           <div
                             className="bar actual"
                             style={{
@@ -381,35 +679,51 @@ function App() {
                             }}
                             title={`Forecast: ${item.forecast_units} units`}
                           />
+
                         </div>
                       )
                     })
+
                   ) : (
+
                     <div className="chart-loading">
                       Loading sales data...
                     </div>
+
                   )}
+
                 </div>
 
                 <div className="x-axis">
+
                   {sales.map((item) => {
+
                     const date = new Date(
                       `${item.month}-01`,
                     )
 
                     return (
                       <span key={item.month}>
-                        {date.toLocaleString('en-US', {
-                          month: 'short',
-                        })}
+
+                        {date.toLocaleString(
+                          'en-US',
+                          {
+                            month: 'short',
+                          },
+                        )}
+
                       </span>
                     )
                   })}
+
                 </div>
+
               </div>
+
             </div>
 
             <div className="chart-legend">
+
               <span>
                 <i className="legend-dot actual-dot" />
                 Actual
@@ -419,31 +733,56 @@ function App() {
                 <i className="legend-dot forecast-dot" />
                 Forecast
               </span>
+
             </div>
+
           </div>
 
           {/* REVENUE */}
+
           <div className="panel revenue-panel">
+
             <div className="panel-header">
+
               <div>
-                <h2>Revenue</h2>
-                <p>Monthly revenue performance</p>
+
+                <h2>
+                  Revenue
+                </h2>
+
+                <p>
+                  Monthly revenue performance
+                </p>
+
               </div>
+
             </div>
 
             <div className="revenue-total">
+
               <strong>
                 ¥
                 {(
-                  dashboard.total_revenue / 1_000_000
+                  dashboard.total_revenue /
+                  1_000_000
                 ).toFixed(2)}
                 M
               </strong>
 
-              <span>+6.2%</span>
+              <span
+                className={
+                  revenueChange >= 0
+                    ? 'positive'
+                    : 'negative'
+                }
+              >
+                {formatChange(revenueChange)}
+              </span>
+
             </div>
 
             <div className="revenue-chart">
+
               <div className="revenue-grid">
                 <span />
                 <span />
@@ -452,12 +791,15 @@ function App() {
               </div>
 
               {sales.length > 0 ? (
+
                 <svg
                   className="revenue-svg"
                   viewBox="0 0 500 180"
                   preserveAspectRatio="none"
                 >
+
                   {/* Revenue area */}
+
                   <polyline
                     points={revenueAreaPoints}
                     fill="currentColor"
@@ -465,6 +807,7 @@ function App() {
                   />
 
                   {/* Revenue line */}
+
                   <polyline
                     points={revenueLinePoints}
                     fill="none"
@@ -475,72 +818,120 @@ function App() {
                   />
 
                   {/* Data points */}
-                  {revenuePoints.map((point, index) => (
-                    <circle
-                      key={sales[index].month}
-                      cx={point.x}
-                      cy={point.y}
-                      r="4"
-                      fill="currentColor"
-                    >
-                      <title>
-                        {sales[index].month}: ¥
-                        {sales[index].revenue.toLocaleString()}
-                      </title>
-                    </circle>
-                  ))}
+
+                  {revenuePoints.map(
+                    (point, index) => (
+
+                      <circle
+                        key={sales[index].month}
+                        cx={point.x}
+                        cy={point.y}
+                        r="4"
+                        fill="currentColor"
+                      >
+
+                        <title>
+                          {sales[index].month}: ¥
+                          {sales[
+                            index
+                          ].revenue.toLocaleString()}
+                        </title>
+
+                      </circle>
+
+                    ),
+                  )}
+
                 </svg>
+
               ) : (
+
                 <div className="chart-loading">
                   Loading revenue data...
                 </div>
+
               )}
+
             </div>
 
             <div className="month-labels">
+
               {sales.map((item) => {
+
                 const date = new Date(
                   `${item.month}-01`,
                 )
 
                 return (
                   <span key={item.month}>
-                    {date.toLocaleString('en-US', {
-                      month: 'short',
-                    })}
+
+                    {date.toLocaleString(
+                      'en-US',
+                      {
+                        month: 'short',
+                      },
+                    )}
+
                   </span>
                 )
               })}
+
             </div>
+
           </div>
+
         </section>
 
         {/* BOTTOM SECTION */}
+
         <section className="bottom-grid">
+
           {/* PRODUCTS */}
+
           <div className="panel">
+
             <div className="panel-header">
+
               <div>
-                <h2>Product Performance</h2>
+
+                <h2>
+                  Product Performance
+                </h2>
+
                 <p>
                   Revenue contribution by product
                 </p>
+
               </div>
 
               <button className="panel-button">
                 View all →
               </button>
+
             </div>
 
             <div className="product-table">
+
               <div className="product-row product-header">
-                <span>PRODUCT</span>
-                <span>REVENUE</span>
-                <span>FORECAST VARIANCE</span>
+
+                <span>
+                  PRODUCT
+                </span>
+
+                <span>
+                  REVENUE
+                </span>
+
+                <span>
+                  FORECAST VARIANCE
+                </span>
+
               </div>
 
               {products.length > 0 ? (
+
                 products.map((item) => {
+
                   const variance =
                     item.actual_units !== 0
                       ? ((item.forecast_units -
@@ -561,94 +952,127 @@ function App() {
                       className="product-row"
                       key={item.product}
                     >
+
                       <div className="product-name">
-                        <strong>{item.product}</strong>
+
+                        <strong>
+                          {item.product}
+                        </strong>
 
                         <span>
                           {item.actual_units.toLocaleString()}{' '}
                           actual units
                         </span>
+
                       </div>
 
                       <strong>
                         ¥
                         {(
-                          item.revenue / 1_000_000
+                          item.revenue /
+                          1_000_000
                         ).toFixed(2)}
                         M
                       </strong>
 
-                      <span className={varianceClass}>
+                      <span
+                        className={varianceClass}
+                      >
                         {variance > 0 ? '+' : ''}
                         {variance.toFixed(1)}%
                       </span>
+
                     </div>
                   )
                 })
+
               ) : (
+
                 <div className="chart-loading">
                   Loading product data...
                 </div>
+
               )}
+
             </div>
+
           </div>
 
           {/* AI INSIGHTS */}
+
           <div className="panel insights-panel">
+
             <div className="panel-header">
-              <div>
-                <h2>AI Insights</h2>
-                <p>Automated recommendations</p>
-              </div>
-            </div>
-
-            <div className="insight">
-              <div className="insight-icon positive-icon">
-                ↑
-              </div>
 
               <div>
-                <strong>Demand increasing</strong>
+
+                <h2>
+                  AI Insights
+                </h2>
 
                 <p>
-                  Inverter demand is expected to rise over
-                  the next quarter.
+                  Automated recommendations
                 </p>
+
               </div>
+
             </div>
 
-            <div className="insight">
-              <div className="insight-icon warning-icon">
-                !
+            {insights.length > 0 ? (
+
+              insights.map(
+                (insight, index) => (
+
+                  <div
+                    className="insight"
+                    key={`${insight.title}-${index}`}
+                  >
+
+                    <div
+                      className={`insight-icon ${insight.type}-icon`}
+                    >
+
+                      {insight.type ===
+                      'positive'
+                        ? '↑'
+                        : insight.type ===
+                            'warning'
+                          ? '!'
+                          : '◆'}
+
+                    </div>
+
+                    <div>
+
+                      <strong>
+                        {insight.title}
+                      </strong>
+
+                      <p>
+                        {insight.message}
+                      </p>
+
+                    </div>
+
+                  </div>
+
+                ),
+              )
+
+            ) : (
+
+              <div className="chart-loading">
+                Loading AI insights...
               </div>
 
-              <div>
-                <strong>Inventory attention</strong>
+            )}
 
-                <p>
-                  Servo Motor inventory may require
-                  replenishment.
-                </p>
-              </div>
-            </div>
-
-            <div className="insight">
-              <div className="insight-icon neutral-icon">
-                ◆
-              </div>
-
-              <div>
-                <strong>Forecast stable</strong>
-
-                <p>
-                  Current model performance remains above
-                  the 95% target.
-                </p>
-              </div>
-            </div>
           </div>
+
         </section>
+
       </main>
+
     </div>
   )
 }
