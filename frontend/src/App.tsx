@@ -1,6 +1,38 @@
+import { useEffect, useState } from 'react'
 import './App.css'
 
+type DashboardData = {
+  total_units: number
+  total_revenue: number
+  forecast_accuracy: number
+  top_product: string
+}
+
 function App() {
+  const [dashboard, setDashboard] = useState<DashboardData>({
+    total_units: 0,
+    total_revenue: 0,
+    forecast_accuracy: 0,
+    top_product: '',
+  })
+
+  useEffect(() => {
+    fetch('http://127.0.0.1:8100/api/dashboard')
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('Failed to fetch dashboard data')
+        }
+
+        return response.json()
+      })
+      .then((data: DashboardData) => {
+        setDashboard(data)
+      })
+      .catch((error) => {
+        console.error('Failed to fetch dashboard:', error)
+      })
+  }, [])
+
   return (
     <div className="app">
       {/* SIDEBAR */}
@@ -91,7 +123,9 @@ function App() {
               <div className="kpi-icon">▦</div>
             </div>
 
-            <div className="kpi-value">1,625</div>
+            <div className="kpi-value">
+              {dashboard.total_units.toLocaleString()}
+            </div>
 
             <div className="kpi-change positive">
               ↑ 8.4%
@@ -105,7 +139,9 @@ function App() {
               <div className="kpi-icon">¥</div>
             </div>
 
-            <div className="kpi-value">¥6.50M</div>
+            <div className="kpi-value">
+              ¥{(dashboard.total_revenue / 1_000_000).toFixed(2)}M
+            </div>
 
             <div className="kpi-change positive">
               ↑ 6.2%
@@ -119,7 +155,9 @@ function App() {
               <div className="kpi-icon">◎</div>
             </div>
 
-            <div className="kpi-value">96.8%</div>
+            <div className="kpi-value">
+              {dashboard.forecast_accuracy.toFixed(1)}%
+            </div>
 
             <div className="kpi-change positive">
               ↑ 2.1%
@@ -133,11 +171,13 @@ function App() {
               <div className="kpi-icon">★</div>
             </div>
 
-            <div className="kpi-value product-kpi">MELSEC iQ-R</div>
+            <div className="kpi-value product-kpi">
+              {dashboard.top_product}
+            </div>
 
             <div className="kpi-change neutral">
-              ¥1.62M
-              <span>revenue generated</span>
+              Top revenue product
+              <span>based on current data</span>
             </div>
           </div>
         </section>
@@ -239,7 +279,9 @@ function App() {
             </div>
 
             <div className="revenue-total">
-              <strong>¥6.50M</strong>
+              <strong>
+                ¥{(dashboard.total_revenue / 1_000_000).toFixed(2)}M
+              </strong>
               <span>+6.2%</span>
             </div>
 
