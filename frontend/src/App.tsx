@@ -15,6 +15,13 @@ type SalesData = {
   revenue: number
 }
 
+type ProductData = {
+  product: string
+  actual_units: number
+  forecast_units: number
+  revenue: number
+}
+
 function App() {
   const [dashboard, setDashboard] = useState<DashboardData>({
     total_units: 0,
@@ -24,6 +31,7 @@ function App() {
   })
 
   const [sales, setSales] = useState<SalesData[]>([])
+  const [products, setProducts] = useState<ProductData[]>([])
 
   useEffect(() => {
     // Get dashboard KPI data
@@ -57,6 +65,22 @@ function App() {
       .catch((error) => {
         console.error('Failed to fetch sales:', error)
       })
+
+    // Get product performance data
+    fetch('http://127.0.0.1:8100/api/products')
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('Failed to fetch product data')
+        }
+
+        return response.json()
+      })
+      .then((data: ProductData[]) => {
+        setProducts(data)
+      })
+      .catch((error) => {
+        console.error('Failed to fetch products:', error)
+      })
   }, [])
 
   // Use the largest value to calculate bar heights dynamically.
@@ -69,6 +93,52 @@ function App() {
           ]),
         )
       : 200
+
+  // Revenue chart calculations
+  const chartWidth = 500
+  const chartHeight = 180
+  const chartPadding = 8
+
+  const maxRevenue =
+    sales.length > 0
+      ? Math.max(...sales.map((item) => item.revenue))
+      : 1
+
+  const minRevenue =
+    sales.length > 0
+      ? Math.min(...sales.map((item) => item.revenue))
+      : 0
+
+  const revenueRange = Math.max(maxRevenue - minRevenue, 1)
+
+  const revenuePoints = sales.map((item, index) => {
+    const x =
+      sales.length === 1
+        ? chartWidth / 2
+        : (index / (sales.length - 1)) *
+            (chartWidth - chartPadding * 2) +
+          chartPadding
+
+    const y =
+      chartHeight -
+      ((item.revenue - minRevenue) / revenueRange) *
+        (chartHeight - chartPadding * 2) -
+      chartPadding
+
+    return {
+      x,
+      y,
+    }
+  })
+
+  const revenueLinePoints = revenuePoints
+    .map((point) => `${point.x},${point.y}`)
+    .join(' ')
+
+  const revenueAreaPoints =
+    revenuePoints.length > 0
+      ? `${revenueLinePoints} ${chartWidth - chartPadding},${chartHeight} ${chartPadding},${chartHeight}`
+      : ''
 
   return (
     <div className="app">
@@ -106,7 +176,9 @@ function App() {
             Inventory Risk
           </button>
 
-          <div className="nav-section-title analysis-title">ANALYSIS</div>
+          <div className="nav-section-title analysis-title">
+            ANALYSIS
+          </div>
 
           <button className="nav-item">
             <span>◈</span>
@@ -139,11 +211,15 @@ function App() {
         {/* HEADER */}
         <header className="header">
           <div>
-            <div className="breadcrumb">DASHBOARD / OVERVIEW</div>
+            <div className="breadcrumb">
+              DASHBOARD / OVERVIEW
+            </div>
 
             <h1>Sales Intelligence Dashboard</h1>
 
-            <p>AI-powered sales order forecasting and analysis</p>
+            <p>
+              AI-powered sales order forecasting and analysis
+            </p>
           </div>
 
           <div className="header-right">
@@ -181,7 +257,11 @@ function App() {
             </div>
 
             <div className="kpi-value">
-              ¥{(dashboard.total_revenue / 1_000_000).toFixed(2)}M
+              ¥
+              {(dashboard.total_revenue / 1_000_000).toFixed(
+                2,
+              )}
+              M
             </div>
 
             <div className="kpi-change positive">
@@ -233,15 +313,29 @@ function App() {
                 <p>Actual vs forecast units</p>
               </div>
 
-              <button className="panel-button">Monthly ⌄</button>
+              <button className="panel-button">
+                Monthly ⌄
+              </button>
             </div>
 
             <div className="sales-chart">
               <div className="y-axis">
-                <span>{Math.ceil(maxSalesValue / 50) * 50}</span>
-                <span>{Math.ceil(maxSalesValue / 50) * 50 - 50}</span>
-                <span>{Math.ceil(maxSalesValue / 50) * 50 - 100}</span>
-                <span>{Math.ceil(maxSalesValue / 50) * 50 - 150}</span>
+                <span>
+                  {Math.ceil(maxSalesValue / 50) * 50}
+                </span>
+
+                <span>
+                  {Math.ceil(maxSalesValue / 50) * 50 - 50}
+                </span>
+
+                <span>
+                  {Math.ceil(maxSalesValue / 50) * 50 - 100}
+                </span>
+
+                <span>
+                  {Math.ceil(maxSalesValue / 50) * 50 - 150}
+                </span>
+
                 <span>0</span>
               </div>
 
@@ -258,13 +352,20 @@ function App() {
                   {sales.length > 0 ? (
                     sales.map((item) => {
                       const actualHeight =
-                        (item.actual_units / maxSalesValue) * 100
+                        (item.actual_units /
+                          maxSalesValue) *
+                        100
 
                       const forecastHeight =
-                        (item.forecast_units / maxSalesValue) * 100
+                        (item.forecast_units /
+                          maxSalesValue) *
+                        100
 
                       return (
-                        <div className="bar-group" key={item.month}>
+                        <div
+                          className="bar-group"
+                          key={item.month}
+                        >
                           <div
                             className="bar actual"
                             style={{
@@ -292,7 +393,9 @@ function App() {
 
                 <div className="x-axis">
                   {sales.map((item) => {
-                    const date = new Date(`${item.month}-01`)
+                    const date = new Date(
+                      `${item.month}-01`,
+                    )
 
                     return (
                       <span key={item.month}>
@@ -330,7 +433,11 @@ function App() {
 
             <div className="revenue-total">
               <strong>
-                ¥{(dashboard.total_revenue / 1_000_000).toFixed(2)}M
+                ¥
+                {(
+                  dashboard.total_revenue / 1_000_000
+                ).toFixed(2)}
+                M
               </strong>
 
               <span>+6.2%</span>
@@ -344,35 +451,66 @@ function App() {
                 <span />
               </div>
 
-              <svg
-                className="revenue-svg"
-                viewBox="0 0 500 180"
-                preserveAspectRatio="none"
-              >
-                <polyline
-                  points="0,145 45,130 90,118 135,135 180,105 225,95 270,80 315,88 360,62 405,52 450,38 500,25"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
+              {sales.length > 0 ? (
+                <svg
+                  className="revenue-svg"
+                  viewBox="0 0 500 180"
+                  preserveAspectRatio="none"
+                >
+                  {/* Revenue area */}
+                  <polyline
+                    points={revenueAreaPoints}
+                    fill="currentColor"
+                    opacity="0.08"
+                  />
 
-                <polyline
-                  points="0,145 45,130 90,118 135,135 180,105 225,95 270,80 315,88 360,62 405,52 450,38 500,25 500,180 0,180"
-                  fill="currentColor"
-                  opacity="0.08"
-                />
-              </svg>
+                  {/* Revenue line */}
+                  <polyline
+                    points={revenueLinePoints}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+
+                  {/* Data points */}
+                  {revenuePoints.map((point, index) => (
+                    <circle
+                      key={sales[index].month}
+                      cx={point.x}
+                      cy={point.y}
+                      r="4"
+                      fill="currentColor"
+                    >
+                      <title>
+                        {sales[index].month}: ¥
+                        {sales[index].revenue.toLocaleString()}
+                      </title>
+                    </circle>
+                  ))}
+                </svg>
+              ) : (
+                <div className="chart-loading">
+                  Loading revenue data...
+                </div>
+              )}
             </div>
 
             <div className="month-labels">
-              <span>Jan</span>
-              <span>Mar</span>
-              <span>May</span>
-              <span>Jul</span>
-              <span>Sep</span>
-              <span>Nov</span>
+              {sales.map((item) => {
+                const date = new Date(
+                  `${item.month}-01`,
+                )
+
+                return (
+                  <span key={item.month}>
+                    {date.toLocaleString('en-US', {
+                      month: 'short',
+                    })}
+                  </span>
+                )
+              })}
             </div>
           </div>
         </section>
@@ -384,62 +522,74 @@ function App() {
             <div className="panel-header">
               <div>
                 <h2>Product Performance</h2>
-                <p>Revenue contribution by product</p>
+                <p>
+                  Revenue contribution by product
+                </p>
               </div>
 
-              <button className="panel-button">View all →</button>
+              <button className="panel-button">
+                View all →
+              </button>
             </div>
 
             <div className="product-table">
               <div className="product-row product-header">
                 <span>PRODUCT</span>
                 <span>REVENUE</span>
-                <span>GROWTH</span>
+                <span>FORECAST VARIANCE</span>
               </div>
 
-              <div className="product-row">
-                <div className="product-name">
-                  <strong>MELSEC iQ-R</strong>
-                  <span>PLC Systems</span>
+              {products.length > 0 ? (
+                products.map((item) => {
+                  const variance =
+                    item.actual_units !== 0
+                      ? ((item.forecast_units -
+                          item.actual_units) /
+                          item.actual_units) *
+                        100
+                      : 0
+
+                  const varianceClass =
+                    variance > 0
+                      ? 'positive'
+                      : variance < 0
+                        ? 'negative'
+                        : 'neutral'
+
+                  return (
+                    <div
+                      className="product-row"
+                      key={item.product}
+                    >
+                      <div className="product-name">
+                        <strong>{item.product}</strong>
+
+                        <span>
+                          {item.actual_units.toLocaleString()}{' '}
+                          actual units
+                        </span>
+                      </div>
+
+                      <strong>
+                        ¥
+                        {(
+                          item.revenue / 1_000_000
+                        ).toFixed(2)}
+                        M
+                      </strong>
+
+                      <span className={varianceClass}>
+                        {variance > 0 ? '+' : ''}
+                        {variance.toFixed(1)}%
+                      </span>
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="chart-loading">
+                  Loading product data...
                 </div>
-
-                <strong>¥1.62M</strong>
-
-                <span className="positive">+12.4%</span>
-              </div>
-
-              <div className="product-row">
-                <div className="product-name">
-                  <strong>MELSEC iQ-F</strong>
-                  <span>PLC Systems</span>
-                </div>
-
-                <strong>¥1.52M</strong>
-
-                <span className="positive">+8.7%</span>
-              </div>
-
-              <div className="product-row">
-                <div className="product-name">
-                  <strong>Inverter</strong>
-                  <span>Drive Systems</span>
-                </div>
-
-                <strong>¥2.10M</strong>
-
-                <span className="positive">+5.3%</span>
-              </div>
-
-              <div className="product-row">
-                <div className="product-name">
-                  <strong>Servo Motor</strong>
-                  <span>Motion Systems</span>
-                </div>
-
-                <strong>¥1.26M</strong>
-
-                <span className="negative">-2.1%</span>
-              </div>
+              )}
             </div>
           </div>
 
@@ -453,37 +603,46 @@ function App() {
             </div>
 
             <div className="insight">
-              <div className="insight-icon positive-icon">↑</div>
+              <div className="insight-icon positive-icon">
+                ↑
+              </div>
 
               <div>
                 <strong>Demand increasing</strong>
 
                 <p>
-                  Inverter demand is expected to rise over the next quarter.
+                  Inverter demand is expected to rise over
+                  the next quarter.
                 </p>
               </div>
             </div>
 
             <div className="insight">
-              <div className="insight-icon warning-icon">!</div>
+              <div className="insight-icon warning-icon">
+                !
+              </div>
 
               <div>
                 <strong>Inventory attention</strong>
 
                 <p>
-                  Servo Motor inventory may require replenishment.
+                  Servo Motor inventory may require
+                  replenishment.
                 </p>
               </div>
             </div>
 
             <div className="insight">
-              <div className="insight-icon neutral-icon">◆</div>
+              <div className="insight-icon neutral-icon">
+                ◆
+              </div>
 
               <div>
                 <strong>Forecast stable</strong>
 
                 <p>
-                  Current model performance remains above the 95% target.
+                  Current model performance remains above
+                  the 95% target.
                 </p>
               </div>
             </div>
