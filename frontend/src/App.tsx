@@ -8,6 +8,13 @@ type DashboardData = {
   top_product: string
 }
 
+type SalesData = {
+  month: string
+  actual_units: number
+  forecast_units: number
+  revenue: number
+}
+
 function App() {
   const [dashboard, setDashboard] = useState<DashboardData>({
     total_units: 0,
@@ -16,7 +23,10 @@ function App() {
     top_product: '',
   })
 
+  const [sales, setSales] = useState<SalesData[]>([])
+
   useEffect(() => {
+    // Get dashboard KPI data
     fetch('http://127.0.0.1:8100/api/dashboard')
       .then((response) => {
         if (!response.ok) {
@@ -31,7 +41,34 @@ function App() {
       .catch((error) => {
         console.error('Failed to fetch dashboard:', error)
       })
+
+    // Get monthly sales data
+    fetch('http://127.0.0.1:8100/api/sales')
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('Failed to fetch sales data')
+        }
+
+        return response.json()
+      })
+      .then((data: SalesData[]) => {
+        setSales(data)
+      })
+      .catch((error) => {
+        console.error('Failed to fetch sales:', error)
+      })
   }, [])
+
+  // Use the largest value to calculate bar heights dynamically.
+  const maxSalesValue =
+    sales.length > 0
+      ? Math.max(
+          ...sales.flatMap((item) => [
+            item.actual_units,
+            item.forecast_units,
+          ]),
+        )
+      : 200
 
   return (
     <div className="app">
@@ -39,6 +76,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">M</div>
+
           <div>
             <div className="brand-name">MISSUBIBI</div>
             <div className="brand-subtitle">Sales Intelligence</div>
@@ -88,6 +126,7 @@ function App() {
 
         <div className="model-status">
           <span className="status-dot" />
+
           <div>
             <strong>AI Model Online</strong>
             <span>Last updated just now</span>
@@ -101,7 +140,9 @@ function App() {
         <header className="header">
           <div>
             <div className="breadcrumb">DASHBOARD / OVERVIEW</div>
+
             <h1>Sales Intelligence Dashboard</h1>
+
             <p>AI-powered sales order forecasting and analysis</p>
           </div>
 
@@ -197,10 +238,10 @@ function App() {
 
             <div className="sales-chart">
               <div className="y-axis">
-                <span>200</span>
-                <span>150</span>
-                <span>100</span>
-                <span>50</span>
+                <span>{Math.ceil(maxSalesValue / 50) * 50}</span>
+                <span>{Math.ceil(maxSalesValue / 50) * 50 - 50}</span>
+                <span>{Math.ceil(maxSalesValue / 50) * 50 - 100}</span>
+                <span>{Math.ceil(maxSalesValue / 50) * 50 - 150}</span>
                 <span>0</span>
               </div>
 
@@ -214,44 +255,53 @@ function App() {
                 </div>
 
                 <div className="bar-chart">
-                  <div className="bar-group">
-                    <div className="bar actual" style={{ height: '58%' }} />
-                    <div className="bar forecast" style={{ height: '61%' }} />
-                  </div>
+                  {sales.length > 0 ? (
+                    sales.map((item) => {
+                      const actualHeight =
+                        (item.actual_units / maxSalesValue) * 100
 
-                  <div className="bar-group">
-                    <div className="bar actual" style={{ height: '66%' }} />
-                    <div className="bar forecast" style={{ height: '64%' }} />
-                  </div>
+                      const forecastHeight =
+                        (item.forecast_units / maxSalesValue) * 100
 
-                  <div className="bar-group">
-                    <div className="bar actual" style={{ height: '73%' }} />
-                    <div className="bar forecast" style={{ height: '70%' }} />
-                  </div>
+                      return (
+                        <div className="bar-group" key={item.month}>
+                          <div
+                            className="bar actual"
+                            style={{
+                              height: `${actualHeight}%`,
+                            }}
+                            title={`Actual: ${item.actual_units} units`}
+                          />
 
-                  <div className="bar-group">
-                    <div className="bar actual" style={{ height: '54%' }} />
-                    <div className="bar forecast" style={{ height: '59%' }} />
-                  </div>
-
-                  <div className="bar-group">
-                    <div className="bar actual" style={{ height: '62%' }} />
-                    <div className="bar forecast" style={{ height: '60%' }} />
-                  </div>
-
-                  <div className="bar-group">
-                    <div className="bar actual" style={{ height: '69%' }} />
-                    <div className="bar forecast" style={{ height: '68%' }} />
-                  </div>
+                          <div
+                            className="bar forecast"
+                            style={{
+                              height: `${forecastHeight}%`,
+                            }}
+                            title={`Forecast: ${item.forecast_units} units`}
+                          />
+                        </div>
+                      )
+                    })
+                  ) : (
+                    <div className="chart-loading">
+                      Loading sales data...
+                    </div>
+                  )}
                 </div>
 
                 <div className="x-axis">
-                  <span>Jan</span>
-                  <span>Feb</span>
-                  <span>Mar</span>
-                  <span>Apr</span>
-                  <span>May</span>
-                  <span>Jun</span>
+                  {sales.map((item) => {
+                    const date = new Date(`${item.month}-01`)
+
+                    return (
+                      <span key={item.month}>
+                        {date.toLocaleString('en-US', {
+                          month: 'short',
+                        })}
+                      </span>
+                    )
+                  })}
                 </div>
               </div>
             </div>
@@ -282,6 +332,7 @@ function App() {
               <strong>
                 ¥{(dashboard.total_revenue / 1_000_000).toFixed(2)}M
               </strong>
+
               <span>+6.2%</span>
             </div>
 
