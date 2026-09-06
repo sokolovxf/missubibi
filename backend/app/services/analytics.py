@@ -1,5 +1,4 @@
-from app.data.mock_data import get_sales_data
-
+from app.data.sales_data import get_sales_data
 
 def get_dashboard_summary():
     df = get_sales_data()
