@@ -1,5 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
+
+/*
+ * ---------------------------------------------------------
+ * TYPES
+ * ---------------------------------------------------------
+ */
 
 type DashboardData = {
   total_units: number
@@ -28,6 +34,166 @@ type Insight = {
   message: string
 }
 
+type ForecastResult = {
+  status: 'idle' | 'running' | 'ok' | 'insufficient_history' | 'error'
+  forecast?: {
+    months: string[]
+    point: number[]
+    lower_90: number[]
+    upper_90: number[]
+    annual_total: number
+    annual_yoy_pct: number | null
+  }
+  diagnostics?: {
+    wf1: { SARIMA: { accuracy_pct: number } }
+    wf12: { SARIMA: { accuracy_pct: number }; beats_naive: boolean }
+  }
+  data_anomalies?: { message: string }[]
+  message?: string
+}
+
+type ViewId =
+  | 'overview'
+  | 'forecast'
+  | 'revenue'
+  | 'inventory'
+  | 'products'
+  | 'customers'
+  | 'accuracy'
+
+type PeriodId = 'all' | '6' | '12' | '24'
+
+type ProductSort = 'revenue-desc' | 'revenue-asc' | 'variance-desc' | 'variance-asc'
+
+/*
+ * ---------------------------------------------------------
+ * ICONS (inline, stroke-based, no external icon dependency)
+ * ---------------------------------------------------------
+ */
+
+type IconProps = { size?: number }
+
+const IconGrid = ({ size = 18 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <rect x="3" y="3" width="8" height="8" rx="1.5" />
+    <rect x="13" y="3" width="8" height="8" rx="1.5" />
+    <rect x="3" y="13" width="8" height="8" rx="1.5" />
+    <rect x="13" y="13" width="8" height="8" rx="1.5" />
+  </svg>
+)
+
+const IconTrend = ({ size = 18 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <path d="M3 17l6-6 4 4 8-9" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M15 6h6v6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const IconCoin = ({ size = 18 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v10M9 9.5c0-1.4 1.3-2.5 3-2.5s3 1 3 2.2-1.3 1.8-3 2-3 .9-3 2.1 1.3 2.2 3 2.2 3-1.1 3-2.5" strokeLinecap="round" />
+  </svg>
+)
+
+const IconBox = ({ size = 18 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <path d="M3 8l9-5 9 5-9 5-9-5z" strokeLinejoin="round" />
+    <path d="M3 8v8l9 5 9-5V8" strokeLinejoin="round" />
+    <path d="M12 13v8" />
+  </svg>
+)
+
+const IconLayers = ({ size = 18 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <path d="M12 3l9 5-9 5-9-5 9-5z" strokeLinejoin="round" />
+    <path d="M3 13l9 5 9-5" strokeLinejoin="round" />
+  </svg>
+)
+
+const IconUsers = ({ size = 18 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <circle cx="9" cy="8" r="3.2" />
+    <path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5" strokeLinecap="round" />
+    <path d="M16 8.2c1.5.2 2.6 1.4 2.6 2.8 0 1.3-1 2.5-2.3 2.8M19 20c0-2.6-1.7-4.5-4-5.2" strokeLinecap="round" />
+  </svg>
+)
+
+const IconTarget = ({ size = 18 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <circle cx="12" cy="12" r="8.5" />
+    <circle cx="12" cy="12" r="4.5" />
+    <circle cx="12" cy="12" r="0.8" fill="currentColor" />
+  </svg>
+)
+
+const IconChevron = ({ size = 14 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const IconSearch = ({ size = 16 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+    <circle cx="11" cy="11" r="7" />
+    <path d="M20 20l-4-4" strokeLinecap="round" />
+  </svg>
+)
+
+/*
+ * ---------------------------------------------------------
+ * STATIC CONFIG
+ * ---------------------------------------------------------
+ */
+
+const NAV_ITEMS: { id: ViewId; label: string; icon: (p: IconProps) => JSX.Element }[] = [
+  { id: 'overview', label: 'Overview', icon: IconGrid },
+  { id: 'forecast', label: 'Sales forecast', icon: IconTrend },
+  { id: 'revenue', label: 'Revenue', icon: IconCoin },
+  { id: 'inventory', label: 'Inventory risk', icon: IconBox },
+  { id: 'products', label: 'Products', icon: IconLayers },
+  { id: 'customers', label: 'Customers', icon: IconUsers },
+  { id: 'accuracy', label: 'Forecast accuracy', icon: IconTarget },
+]
+
+const PERIOD_OPTIONS: { id: PeriodId; label: string }[] = [
+  { id: 'all', label: 'All time' },
+  { id: '6', label: 'Last 6 months' },
+  { id: '12', label: 'Last 12 months' },
+  { id: '24', label: 'Last 24 months' },
+]
+
+const VIEW_META: Record<ViewId, { title: string; subtitle: string }> = {
+  overview: {
+    title: 'Sales intelligence dashboard',
+    subtitle: 'AI-powered sales order forecasting and analysis',
+  },
+  forecast: {
+    title: 'Sales forecast',
+    subtitle: 'Actual vs forecast units, with the validated SARIMA projection',
+  },
+  revenue: {
+    title: 'Revenue',
+    subtitle: 'Monthly revenue performance over the selected period',
+  },
+  inventory: {
+    title: 'Inventory risk',
+    subtitle: 'Products where forecast and actuals diverge most — a proxy for over/under-stock risk',
+  },
+  products: {
+    title: 'Products',
+    subtitle: 'Revenue contribution and forecast variance by product',
+  },
+  customers: {
+    title: 'Customers',
+    subtitle: 'Customer-level breakdown',
+  },
+  accuracy: {
+    title: 'Forecast accuracy',
+    subtitle: '1-month vs 12-month validation results for the SARIMA model',
+  },
+}
+
 function App() {
   const [dashboard, setDashboard] = useState<DashboardData>({
     total_units: 0,
@@ -39,6 +205,15 @@ function App() {
   const [sales, setSales] = useState<SalesData[]>([])
   const [products, setProducts] = useState<ProductData[]>([])
   const [insights, setInsights] = useState<Insight[]>([])
+  const [forecast, setForecast] = useState<ForecastResult>({ status: 'idle' })
+
+  const [activeView, setActiveView] = useState<ViewId>('overview')
+
+  const [periodFilter, setPeriodFilter] = useState<PeriodId>('all')
+  const [periodMenuOpen, setPeriodMenuOpen] = useState(false)
+
+  const [productQuery, setProductQuery] = useState('')
+  const [productSort, setProductSort] = useState<ProductSort>('revenue-desc')
 
   useEffect(() => {
     // Get dashboard KPI data
@@ -106,23 +281,72 @@ function App() {
       })
   }, [])
 
+  // Trigger + poll the SARIMA forecast run separately — it's a
+  // distinct thing from the four MySQL-backed fetches above: it
+  // needs to be triggered, takes 40-90s+, and has its own status.
+  useEffect(() => {
+    let cancelled = false
+    let pollId: ReturnType<typeof setInterval>
+
+    const poll = () => {
+      fetch('http://127.0.0.1:8100/api/forecast')
+        .then((r) => r.json())
+        .then((data: ForecastResult) => {
+          if (cancelled) return
+          setForecast(data)
+          if (data.status !== 'running') {
+            clearInterval(pollId)
+          }
+        })
+        .catch(() => clearInterval(pollId))
+    }
+
+    fetch('http://127.0.0.1:8100/api/forecast/run', { method: 'POST' })
+      .then(() => {
+        setForecast({ status: 'running' })
+        pollId = setInterval(poll, 5000)
+        poll()
+      })
+      .catch(() =>
+        setForecast({ status: 'error', message: 'Could not start forecast.' }),
+      )
+
+    return () => {
+      cancelled = true
+      clearInterval(pollId)
+    }
+  }, [])
+
   /*
    * ---------------------------------------------------------
-   * DYNAMIC KPI CALCULATIONS
+   * PERIOD FILTER — drives every chart and KPI below, so
+   * switching "All time" / "Last 12 months" etc. actually
+   * changes what's rendered, not just a label.
    * ---------------------------------------------------------
    */
 
-  const midpoint = Math.floor(sales.length / 2)
+  const filteredSales = useMemo(() => {
+    if (periodFilter === 'all') return sales
+    const n = parseInt(periodFilter, 10)
+    return sales.slice(-n)
+  }, [sales, periodFilter])
+
+  const periodLabel =
+    PERIOD_OPTIONS.find((o) => o.id === periodFilter)?.label ?? 'All time'
+
+  /*
+   * ---------------------------------------------------------
+   * DYNAMIC KPI CALCULATIONS (now based on filteredSales)
+   * ---------------------------------------------------------
+   */
+
+  const midpoint = Math.floor(filteredSales.length / 2)
 
   const previousSalesPeriod =
-    sales.length > 1
-      ? sales.slice(0, midpoint)
-      : []
+    filteredSales.length > 1 ? filteredSales.slice(0, midpoint) : []
 
   const currentSalesPeriod =
-    sales.length > 1
-      ? sales.slice(midpoint)
-      : []
+    filteredSales.length > 1 ? filteredSales.slice(midpoint) : []
 
   const previousUnits = previousSalesPeriod.reduce(
     (total, item) => total + item.actual_units,
@@ -144,40 +368,26 @@ function App() {
     0,
   )
 
+  const periodTotalUnits = filteredSales.reduce((t, i) => t + i.actual_units, 0)
+  const periodTotalRevenue = filteredSales.reduce((t, i) => t + i.revenue, 0)
+
   const unitsChange =
-    previousUnits > 0
-      ? ((currentUnits - previousUnits) / previousUnits) * 100
-      : 0
+    previousUnits > 0 ? ((currentUnits - previousUnits) / previousUnits) * 100 : 0
 
   const revenueChange =
     previousRevenue > 0
       ? ((currentRevenue - previousRevenue) / previousRevenue) * 100
       : 0
 
-  /*
-   * Forecast accuracy comparison.
-   *
-   * The backend currently returns overall accuracy.
-   * We calculate first-half vs second-half accuracy
-   * using the available sales data.
-   */
-
   const calculateAccuracy = (data: SalesData[]) => {
-    const totalActual = data.reduce(
-      (total, item) => total + item.actual_units,
-      0,
-    )
+    const totalActual = data.reduce((total, item) => total + item.actual_units, 0)
 
     if (totalActual === 0) {
       return 0
     }
 
     const totalError = data.reduce(
-      (total, item) =>
-        total +
-        Math.abs(
-          item.actual_units - item.forecast_units,
-        ),
+      (total, item) => total + Math.abs(item.actual_units - item.forecast_units),
       0,
     )
 
@@ -185,39 +395,43 @@ function App() {
   }
 
   const previousAccuracy =
-    previousSalesPeriod.length > 0
-      ? calculateAccuracy(previousSalesPeriod)
-      : 0
+    previousSalesPeriod.length > 0 ? calculateAccuracy(previousSalesPeriod) : 0
 
   const currentAccuracy =
-    currentSalesPeriod.length > 0
-      ? calculateAccuracy(currentSalesPeriod)
-      : 0
+    currentSalesPeriod.length > 0 ? calculateAccuracy(currentSalesPeriod) : 0
 
   const accuracyChange =
-    previousAccuracy > 0
-      ? currentAccuracy - previousAccuracy
-      : 0
+    previousAccuracy > 0 ? currentAccuracy - previousAccuracy : 0
+
+  /*
+   * Forecast-accuracy KPI: prefer the real, validated SARIMA
+   * 1-month accuracy once it's loaded. Fall back to the backend's
+   * placeholder (lag-1) figure and say so plainly — this is the
+   * fix for the confusing "19%" number, which was always the
+   * placeholder, never the SARIMA result.
+   */
+
+  const sarimaWf1Accuracy =
+    forecast.status === 'ok' ? forecast.diagnostics?.wf1.SARIMA.accuracy_pct : undefined
+
+  const accuracyIsPlaceholder = sarimaWf1Accuracy === undefined
+  const displayedAccuracy = sarimaWf1Accuracy ?? dashboard.forecast_accuracy
 
   /*
    * ---------------------------------------------------------
-   * SALES CHART
+   * SALES CHART (dynamic: scales to whatever filteredSales holds)
    * ---------------------------------------------------------
    */
 
   const maxSalesValue =
-    sales.length > 0
-      ? Math.max(
-          ...sales.flatMap((item) => [
-            item.actual_units,
-            item.forecast_units,
-          ]),
-        )
+    filteredSales.length > 0
+      ? Math.max(...filteredSales.flatMap((item) => [item.actual_units, item.forecast_units]))
       : 200
 
   /*
    * ---------------------------------------------------------
-   * REVENUE CHART
+   * REVENUE CHART (viewBox-based, scales to container width —
+   * dynamic regardless of how many months are in filteredSales)
    * ---------------------------------------------------------
    */
 
@@ -226,48 +440,65 @@ function App() {
   const chartPadding = 8
 
   const maxRevenue =
-    sales.length > 0
-      ? Math.max(...sales.map((item) => item.revenue))
-      : 1
+    filteredSales.length > 0 ? Math.max(...filteredSales.map((item) => item.revenue)) : 1
 
   const minRevenue =
-    sales.length > 0
-      ? Math.min(...sales.map((item) => item.revenue))
-      : 0
+    filteredSales.length > 0 ? Math.min(...filteredSales.map((item) => item.revenue)) : 0
 
-  const revenueRange = Math.max(
-    maxRevenue - minRevenue,
-    1,
-  )
+  const revenueRange = Math.max(maxRevenue - minRevenue, 1)
 
-  const revenuePoints = sales.map((item, index) => {
+  const revenuePoints = filteredSales.map((item, index) => {
     const x =
-      sales.length === 1
+      filteredSales.length === 1
         ? chartWidth / 2
-        : (index / (sales.length - 1)) *
-            (chartWidth - chartPadding * 2) +
+        : (index / (filteredSales.length - 1)) * (chartWidth - chartPadding * 2) +
           chartPadding
 
     const y =
       chartHeight -
-      ((item.revenue - minRevenue) / revenueRange) *
-        (chartHeight - chartPadding * 2) -
+      ((item.revenue - minRevenue) / revenueRange) * (chartHeight - chartPadding * 2) -
       chartPadding
 
-    return {
-      x,
-      y,
-    }
+    return { x, y }
   })
 
-  const revenueLinePoints = revenuePoints
-    .map((point) => `${point.x},${point.y}`)
-    .join(' ')
+  const revenueLinePoints = revenuePoints.map((point) => `${point.x},${point.y}`).join(' ')
 
   const revenueAreaPoints =
     revenuePoints.length > 0
       ? `${revenueLinePoints} ${chartWidth - chartPadding},${chartHeight} ${chartPadding},${chartHeight}`
       : ''
+
+  /*
+   * ---------------------------------------------------------
+   * PRODUCTS — filterable + sortable
+   * ---------------------------------------------------------
+   */
+
+  const productVariance = (item: ProductData) =>
+    item.actual_units !== 0
+      ? ((item.forecast_units - item.actual_units) / item.actual_units) * 100
+      : 0
+
+  const filteredProducts = useMemo(() => {
+    const q = productQuery.trim().toLowerCase()
+    const list = products.filter((p) => p.product.toLowerCase().includes(q))
+
+    return list.slice().sort((a, b) => {
+      if (productSort === 'revenue-desc') return b.revenue - a.revenue
+      if (productSort === 'revenue-asc') return a.revenue - b.revenue
+      const va = Math.abs(productVariance(a))
+      const vb = Math.abs(productVariance(b))
+      return productSort === 'variance-desc' ? vb - va : va - vb
+    })
+  }, [products, productQuery, productSort])
+
+  const inventoryRisk = useMemo(() => {
+    return products
+      .slice()
+      .sort((a, b) => Math.abs(productVariance(b)) - Math.abs(productVariance(a)))
+      .slice(0, 10)
+  }, [products])
 
   /*
    * ---------------------------------------------------------
@@ -281,798 +512,606 @@ function App() {
   }
 
   const changeClass = (value: number) => {
-    if (value > 0) {
-      return 'positive'
-    }
-
-    if (value < 0) {
-      return 'negative'
-    }
-
+    if (value > 0) return 'positive'
+    if (value < 0) return 'negative'
     return 'neutral'
   }
 
+  const monthLabel = (month: string) => {
+    const date = new Date(`${month}-01`)
+    return date.toLocaleString('en-US', { month: 'short' })
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * VIEW VISIBILITY — which blocks render for which sidebar view
+   * ---------------------------------------------------------
+   */
+
+  const showKpis = activeView === 'overview'
+  const showSalesChart = activeView === 'overview' || activeView === 'forecast'
+  const showRevenueChart = activeView === 'overview' || activeView === 'revenue'
+  const showForecastPanel =
+    activeView === 'overview' || activeView === 'forecast' || activeView === 'accuracy'
+  const showProductsTable = activeView === 'overview' || activeView === 'products'
+  const showInventoryTable = activeView === 'inventory'
+  const showInsights = activeView === 'overview'
+  const showCustomersPlaceholder = activeView === 'customers'
+
+  const meta = VIEW_META[activeView]
+
   return (
     <div className="app">
-
       {/* SIDEBAR */}
 
       <aside className="sidebar">
-
         <div className="brand">
-
-          <div className="brand-mark">
-            M
-          </div>
-
+          <div className="brand-mark">M</div>
           <div>
-            <div className="brand-name">
-              MISSUBIBI
-            </div>
-
-            <div className="brand-subtitle">
-              Sales Intelligence
-            </div>
+            <div className="brand-name">Missubibi</div>
+            <div className="brand-subtitle">Sales intelligence</div>
           </div>
-
         </div>
 
         <nav className="navigation">
-
-          <div className="nav-section-title">
-            MAIN
-          </div>
-
-          <button className="nav-item active">
-            <span>▦</span>
-            Overview
-          </button>
-
-          <button className="nav-item">
-            <span>⌁</span>
-            Sales Forecast
-          </button>
-
-          <button className="nav-item">
-            <span>¥</span>
-            Revenue
-          </button>
-
-          <button className="nav-item">
-            <span>▤</span>
-            Inventory Risk
-          </button>
-
-          <div className="nav-section-title analysis-title">
-            ANALYSIS
-          </div>
-
-          <button className="nav-item">
-            <span>◈</span>
-            Products
-          </button>
-
-          <button className="nav-item">
-            <span>♙</span>
-            Customers
-          </button>
-
-          <button className="nav-item">
-            <span>◎</span>
-            Forecast Accuracy
-          </button>
-
+          {NAV_ITEMS.map((item, index) => (
+            <button
+              key={item.id}
+              className={`nav-item ${activeView === item.id ? 'active' : ''}`}
+              onClick={() => setActiveView(item.id)}
+              aria-current={activeView === item.id}
+            >
+              <item.icon />
+              {item.label}
+              {index === 3 && <span className="nav-divider" aria-hidden="true" />}
+            </button>
+          ))}
         </nav>
 
         <div className="model-status">
-
           <span className="status-dot" />
-
           <div>
-            <strong>
-              AI Model Online
-            </strong>
-
-            <span>
-              Last updated just now
-            </span>
+            <strong>AI model online</strong>
+            <span>Last updated just now</span>
           </div>
-
         </div>
-
       </aside>
 
       {/* MAIN CONTENT */}
 
       <main className="main">
-
         {/* HEADER */}
 
         <header className="header">
-
           <div>
-
-            <div className="breadcrumb">
-              DASHBOARD / OVERVIEW
-            </div>
-
-            <h1>
-              Sales Intelligence Dashboard
-            </h1>
-
-            <p>
-              AI-powered sales order forecasting and analysis
-            </p>
-
+            <div className="breadcrumb">Dashboard / {meta.title}</div>
+            <h1>{meta.title}</h1>
+            <p>{meta.subtitle}</p>
           </div>
 
           <div className="header-right">
+            <div className="period-control">
+              <button
+                className="period-selector"
+                onClick={() => setPeriodMenuOpen((open) => !open)}
+              >
+                {periodLabel}
+                <IconChevron />
+              </button>
 
-            <button className="period-selector">
-              FY2025
-              <span>⌄</span>
-            </button>
-
-            <div className="user-avatar">
-              GS
+              {periodMenuOpen && (
+                <div className="period-menu">
+                  {PERIOD_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      className={`period-option ${periodFilter === opt.id ? 'active' : ''}`}
+                      onClick={() => {
+                        setPeriodFilter(opt.id)
+                        setPeriodMenuOpen(false)
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
+            <div className="user-avatar">GS</div>
           </div>
-
         </header>
 
         {/* KPI CARDS */}
 
-        <section className="kpi-grid">
-
-          {/* TOTAL UNITS */}
-
-          <div className="kpi-card">
-
-            <div className="kpi-header">
-
-              <span>
-                Total Units
-              </span>
-
-              <div className="kpi-icon">
-                ▦
+        {showKpis && (
+          <section className="kpi-grid">
+            <div className="kpi-card">
+              <div className="kpi-header">
+                <span>Total units</span>
+                <div className="kpi-icon">
+                  <IconGrid size={16} />
+                </div>
               </div>
 
+              <div className="kpi-value">{periodTotalUnits.toLocaleString()}</div>
+
+              <div className={`kpi-change ${changeClass(unitsChange)}`}>
+                {formatChange(unitsChange)}
+                <span>vs previous period</span>
+              </div>
             </div>
 
-            <div className="kpi-value">
-              {dashboard.total_units.toLocaleString()}
-            </div>
-
-            <div
-              className={`kpi-change ${changeClass(
-                unitsChange,
-              )}`}
-            >
-              {formatChange(unitsChange)}
-
-              <span>
-                vs previous period
-              </span>
-            </div>
-
-          </div>
-
-          {/* REVENUE */}
-
-          <div className="kpi-card">
-
-            <div className="kpi-header">
-
-              <span>
-                Forecast Revenue
-              </span>
-
-              <div className="kpi-icon">
-                ¥
+            <div className="kpi-card">
+              <div className="kpi-header">
+                <span>Revenue</span>
+                <div className="kpi-icon">
+                  <IconCoin size={16} />
+                </div>
               </div>
 
-            </div>
-
-            <div className="kpi-value">
-              ¥
-              {(dashboard.total_revenue / 1_000_000).toFixed(
-                2,
-              )}
-              M
-            </div>
-
-            <div
-              className={`kpi-change ${changeClass(
-                revenueChange,
-              )}`}
-            >
-              {formatChange(revenueChange)}
-
-              <span>
-                vs previous period
-              </span>
-            </div>
-
-          </div>
-
-          {/* FORECAST ACCURACY */}
-
-          <div className="kpi-card">
-
-            <div className="kpi-header">
-
-              <span>
-                Forecast Accuracy
-              </span>
-
-              <div className="kpi-icon">
-                ◎
+              <div className="kpi-value">
+                ¥{(periodTotalRevenue / 1_000_000).toFixed(2)}M
               </div>
 
+              <div className={`kpi-change ${changeClass(revenueChange)}`}>
+                {formatChange(revenueChange)}
+                <span>vs previous period</span>
+              </div>
             </div>
 
-            <div className="kpi-value">
-              {dashboard.forecast_accuracy.toFixed(1)}%
-            </div>
-
-            <div
-              className={`kpi-change ${changeClass(
-                accuracyChange,
-              )}`}
-            >
-              {formatChange(accuracyChange)}
-
-              <span>
-                model performance
-              </span>
-            </div>
-
-          </div>
-
-          {/* TOP PRODUCT */}
-
-          <div className="kpi-card">
-
-            <div className="kpi-header">
-
-              <span>
-                Top Product
-              </span>
-
-              <div className="kpi-icon">
-                ★
+            <div className="kpi-card">
+              <div className="kpi-header">
+                <span>Forecast accuracy</span>
+                <div className="kpi-icon">
+                  <IconTarget size={16} />
+                </div>
               </div>
 
-            </div>
+              <div className="kpi-value">{displayedAccuracy.toFixed(1)}%</div>
 
-            <div className="kpi-value product-kpi">
-              {dashboard.top_product}
-            </div>
-
-            <div className="kpi-change neutral">
-
-              Top revenue product
-
-              <span>
-                based on current data
-              </span>
-
-            </div>
-
-          </div>
-
-        </section>
-
-        {/* CHARTS */}
-
-        <section className="charts-grid">
-
-          {/* SALES CHART */}
-
-          <div className="panel sales-panel">
-
-            <div className="panel-header">
-
-              <div>
-
-                <h2>
-                  Sales Performance
-                </h2>
-
-                <p>
-                  Actual vs forecast units
-                </p>
-
-              </div>
-
-              <button className="panel-button">
-                Monthly ⌄
-              </button>
-
-            </div>
-
-            <div className="sales-chart">
-
-              <div className="y-axis">
-
+              <div
+                className={`kpi-change ${
+                  accuracyIsPlaceholder ? 'neutral' : changeClass(accuracyChange)
+                }`}
+              >
+                {accuracyIsPlaceholder
+                  ? 'Provisional'
+                  : formatChange(accuracyChange)}
                 <span>
-                  {Math.ceil(maxSalesValue / 50) * 50}
+                  {accuracyIsPlaceholder
+                    ? 'placeholder (lag-1) — SARIMA loading'
+                    : '1-month SARIMA, validated'}
                 </span>
+              </div>
+            </div>
 
-                <span>
-                  {Math.max(
-                    Math.ceil(maxSalesValue / 50) * 50 -
-                      50,
-                    0,
-                  )}
-                </span>
-
-                <span>
-                  {Math.max(
-                    Math.ceil(maxSalesValue / 50) * 50 -
-                      100,
-                    0,
-                  )}
-                </span>
-
-                <span>
-                  {Math.max(
-                    Math.ceil(maxSalesValue / 50) * 50 -
-                      150,
-                    0,
-                  )}
-                </span>
-
-                <span>
-                  0
-                </span>
-
+            <div className="kpi-card">
+              <div className="kpi-header">
+                <span>Top product</span>
+                <div className="kpi-icon">
+                  <IconLayers size={16} />
+                </div>
               </div>
 
-              <div className="chart-container">
+              <div className="kpi-value product-kpi">{dashboard.top_product}</div>
 
-                <div className="horizontal-lines">
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                  <span />
+              <div className="kpi-change neutral">
+                Top revenue product
+                <span>based on current data</span>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* SALES + FORECAST CHARTS */}
+
+        {(showSalesChart || showForecastPanel) && (
+          <section className="charts-grid">
+            {showSalesChart && (
+              <div className="panel sales-panel">
+                <div className="panel-header">
+                  <div>
+                    <h2>Sales performance</h2>
+                    <p>Actual vs forecast units</p>
+                  </div>
                 </div>
 
-                <div className="bar-chart">
+                <div className="sales-chart">
+                  <div className="y-axis">
+                    <span>{Math.ceil(maxSalesValue / 50) * 50}</span>
+                    <span>{Math.max(Math.ceil(maxSalesValue / 50) * 50 - 50, 0)}</span>
+                    <span>{Math.max(Math.ceil(maxSalesValue / 50) * 50 - 100, 0)}</span>
+                    <span>{Math.max(Math.ceil(maxSalesValue / 50) * 50 - 150, 0)}</span>
+                    <span>0</span>
+                  </div>
 
-                  {sales.length > 0 ? (
-
-                    sales.map((item) => {
-
-                      const actualHeight =
-                        (item.actual_units /
-                          maxSalesValue) *
-                        100
-
-                      const forecastHeight =
-                        (item.forecast_units /
-                          maxSalesValue) *
-                        100
-
-                      return (
-                        <div
-                          className="bar-group"
-                          key={item.month}
-                        >
-
-                          <div
-                            className="bar actual"
-                            style={{
-                              height: `${actualHeight}%`,
-                            }}
-                            title={`Actual: ${item.actual_units} units`}
-                          />
-
-                          <div
-                            className="bar forecast"
-                            style={{
-                              height: `${forecastHeight}%`,
-                            }}
-                            title={`Forecast: ${item.forecast_units} units`}
-                          />
-
-                        </div>
-                      )
-                    })
-
-                  ) : (
-
-                    <div className="chart-loading">
-                      Loading sales data...
+                  <div className="chart-container">
+                    <div className="horizontal-lines">
+                      <span />
+                      <span />
+                      <span />
+                      <span />
+                      <span />
+                      <span />
                     </div>
 
-                  )}
+                    <div className="bar-chart">
+                      {filteredSales.length > 0 ? (
+                        filteredSales.map((item) => {
+                          const actualHeight = (item.actual_units / maxSalesValue) * 100
+                          const forecastHeight = (item.forecast_units / maxSalesValue) * 100
 
+                          return (
+                            <div className="bar-group" key={item.month}>
+                              <div
+                                className="bar actual"
+                                style={{ height: `${actualHeight}%` }}
+                                title={`Actual: ${item.actual_units} units`}
+                              />
+                              <div
+                                className="bar forecast"
+                                style={{ height: `${forecastHeight}%` }}
+                                title={`Forecast: ${item.forecast_units} units`}
+                              />
+                            </div>
+                          )
+                        })
+                      ) : (
+                        <div className="chart-loading">Loading sales data...</div>
+                      )}
+                    </div>
+
+                    <div className="x-axis">
+                      {filteredSales.map((item) => (
+                        <span key={item.month}>{monthLabel(item.month)}</span>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
-                <div className="x-axis">
-
-                  {sales.map((item) => {
-
-                    const date = new Date(
-                      `${item.month}-01`,
-                    )
-
-                    return (
-                      <span key={item.month}>
-
-                        {date.toLocaleString(
-                          'en-US',
-                          {
-                            month: 'short',
-                          },
-                        )}
-
-                      </span>
-                    )
-                  })}
-
-                </div>
-
-              </div>
-
-            </div>
-
-            <div className="chart-legend">
-
-              <span>
-                <i className="legend-dot actual-dot" />
-                Actual
-              </span>
-
-              <span>
-                <i className="legend-dot forecast-dot" />
-                Forecast
-              </span>
-
-            </div>
-
-          </div>
-
-          {/* REVENUE */}
-
-          <div className="panel revenue-panel">
-
-            <div className="panel-header">
-
-              <div>
-
-                <h2>
-                  Revenue
-                </h2>
-
-                <p>
-                  Monthly revenue performance
-                </p>
-
-              </div>
-
-            </div>
-
-            <div className="revenue-total">
-
-              <strong>
-                ¥
-                {(
-                  dashboard.total_revenue /
-                  1_000_000
-                ).toFixed(2)}
-                M
-              </strong>
-
-              <span
-                className={
-                  revenueChange >= 0
-                    ? 'positive'
-                    : 'negative'
-                }
-              >
-                {formatChange(revenueChange)}
-              </span>
-
-            </div>
-
-            <div className="revenue-chart">
-
-              <div className="revenue-grid">
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-
-              {sales.length > 0 ? (
-
-                <svg
-                  className="revenue-svg"
-                  viewBox="0 0 500 180"
-                  preserveAspectRatio="none"
-                >
-
-                  {/* Revenue area */}
-
-                  <polyline
-                    points={revenueAreaPoints}
-                    fill="currentColor"
-                    opacity="0.08"
-                  />
-
-                  {/* Revenue line */}
-
-                  <polyline
-                    points={revenueLinePoints}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-
-                  {/* Data points */}
-
-                  {revenuePoints.map(
-                    (point, index) => (
-
-                      <circle
-                        key={sales[index].month}
-                        cx={point.x}
-                        cy={point.y}
-                        r="4"
-                        fill="currentColor"
-                      >
-
-                        <title>
-                          {sales[index].month}: ¥
-                          {sales[
-                            index
-                          ].revenue.toLocaleString()}
-                        </title>
-
-                      </circle>
-
-                    ),
-                  )}
-
-                </svg>
-
-              ) : (
-
-                <div className="chart-loading">
-                  Loading revenue data...
-                </div>
-
-              )}
-
-            </div>
-
-            <div className="month-labels">
-
-              {sales.map((item) => {
-
-                const date = new Date(
-                  `${item.month}-01`,
-                )
-
-                return (
-                  <span key={item.month}>
-
-                    {date.toLocaleString(
-                      'en-US',
-                      {
-                        month: 'short',
-                      },
-                    )}
-
+                <div className="chart-legend">
+                  <span>
+                    <i className="legend-dot actual-dot" />
+                    Actual
                   </span>
-                )
-              })}
-
-            </div>
-
-          </div>
-
-        </section>
-
-        {/* BOTTOM SECTION */}
-
-        <section className="bottom-grid">
-
-          {/* PRODUCTS */}
-
-          <div className="panel">
-
-            <div className="panel-header">
-
-              <div>
-
-                <h2>
-                  Product Performance
-                </h2>
-
-                <p>
-                  Revenue contribution by product
-                </p>
-
+                  <span>
+                    <i className="legend-dot forecast-dot" />
+                    Forecast
+                  </span>
+                </div>
               </div>
+            )}
 
-              <button className="panel-button">
-                View all →
-              </button>
+            {showForecastPanel && (
+              <div className="panel forecast-panel">
+                <div className="panel-header">
+                  <div>
+                    <h2>FY2025 forecast (SARIMA)</h2>
+                    <p>Next 12 months, revenue</p>
+                  </div>
+                </div>
 
-            </div>
+                {forecast.status === 'running' && (
+                  <div className="chart-loading">Running forecast — this takes 40–90s…</div>
+                )}
 
-            <div className="product-table">
+                {forecast.status === 'insufficient_history' && (
+                  <div className="chart-loading">{forecast.message}</div>
+                )}
 
-              <div className="product-row product-header">
+                {forecast.status === 'error' && (
+                  <div className="chart-loading">{forecast.message}</div>
+                )}
 
-                <span>
-                  PRODUCT
-                </span>
-
-                <span>
-                  REVENUE
-                </span>
-
-                <span>
-                  FORECAST VARIANCE
-                </span>
-
-              </div>
-
-              {products.length > 0 ? (
-
-                products.map((item) => {
-
-                  const variance =
-                    item.actual_units !== 0
-                      ? ((item.forecast_units -
-                          item.actual_units) /
-                          item.actual_units) *
-                        100
-                      : 0
-
-                  const varianceClass =
-                    variance > 0
-                      ? 'positive'
-                      : variance < 0
-                        ? 'negative'
-                        : 'neutral'
-
-                  return (
-                    <div
-                      className="product-row"
-                      key={item.product}
-                    >
-
-                      <div className="product-name">
-
+                {forecast.status === 'ok' && forecast.forecast && (
+                  <>
+                    <div className="forecast-meta">
+                      <div>
                         <strong>
-                          {item.product}
+                          ¥{(forecast.forecast.annual_total / 1_000_000).toFixed(1)}M
                         </strong>
-
-                        <span>
-                          {item.actual_units.toLocaleString()}{' '}
-                          actual units
-                        </span>
-
+                        <span>Forecast annual total</span>
                       </div>
 
-                      <strong>
-                        ¥
-                        {(
-                          item.revenue /
-                          1_000_000
-                        ).toFixed(2)}
-                        M
-                      </strong>
+                      <div>
+                        <strong>
+                          {forecast.forecast.annual_yoy_pct !== null
+                            ? `${forecast.forecast.annual_yoy_pct > 0 ? '+' : ''}${forecast.forecast.annual_yoy_pct}%`
+                            : '—'}
+                        </strong>
+                        <span>YoY vs FY2024</span>
+                      </div>
 
-                      <span
-                        className={varianceClass}
-                      >
-                        {variance > 0 ? '+' : ''}
-                        {variance.toFixed(1)}%
-                      </span>
+                      <div>
+                        <strong>{forecast.diagnostics?.wf1.SARIMA.accuracy_pct}%</strong>
+                        <span>1-month accuracy (validated)</span>
+                      </div>
 
+                      <div>
+                        <strong>{forecast.diagnostics?.wf12.SARIMA.accuracy_pct}%</strong>
+                        <span>12-month accuracy</span>
+                      </div>
                     </div>
-                  )
-                })
 
-              ) : (
+                    {forecast.diagnostics?.wf12.beats_naive === false && (
+                      <div className="forecast-caveat">
+                        At the 12-month horizon, this model has not yet shown it beats a
+                        naive seasonal baseline — treat the annual total as directional,
+                        not precise.
+                      </div>
+                    )}
 
-                <div className="chart-loading">
-                  Loading product data...
+                    {forecast.data_anomalies && forecast.data_anomalies.length > 0 && (
+                      <div className="forecast-caveat">
+                        {forecast.data_anomalies[0].message}
+                      </div>
+                    )}
+
+                    {activeView === 'accuracy' && (
+                      <div className="accuracy-detail">
+                        <div className="accuracy-row">
+                          <span>WF1 (1-month-ahead validation)</span>
+                          <strong className="positive">
+                            {forecast.diagnostics?.wf1.SARIMA.accuracy_pct}% — beats naive baseline
+                          </strong>
+                        </div>
+                        <div className="accuracy-row">
+                          <span>WF12 (12-month-ahead validation)</span>
+                          <strong className="negative">
+                            {forecast.diagnostics?.wf12.SARIMA.accuracy_pct}% — does not beat naive baseline
+                          </strong>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* REVENUE */}
+
+        {showRevenueChart && (
+          <section className="charts-grid single">
+            <div className="panel revenue-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Revenue</h2>
+                  <p>Monthly revenue performance</p>
                 </div>
-
-              )}
-
-            </div>
-
-          </div>
-
-          {/* AI INSIGHTS */}
-
-          <div className="panel insights-panel">
-
-            <div className="panel-header">
-
-              <div>
-
-                <h2>
-                  AI Insights
-                </h2>
-
-                <p>
-                  Automated recommendations
-                </p>
-
               </div>
 
+              <div className="revenue-total">
+                <strong>¥{(periodTotalRevenue / 1_000_000).toFixed(2)}M</strong>
+                <span className={revenueChange >= 0 ? 'positive' : 'negative'}>
+                  {formatChange(revenueChange)}
+                </span>
+              </div>
+
+              <div className="revenue-chart">
+                <div className="revenue-grid">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
+
+                {filteredSales.length > 0 ? (
+                  <svg className="revenue-svg" viewBox="0 0 500 180" preserveAspectRatio="none">
+                    <polyline points={revenueAreaPoints} fill="currentColor" opacity="0.08" />
+                    <polyline
+                      points={revenueLinePoints}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    {revenuePoints.map((point, index) => (
+                      <circle key={filteredSales[index].month} cx={point.x} cy={point.y} r="3.5" fill="currentColor">
+                        <title>
+                          {filteredSales[index].month}: ¥{filteredSales[index].revenue.toLocaleString()}
+                        </title>
+                      </circle>
+                    ))}
+                  </svg>
+                ) : (
+                  <div className="chart-loading">Loading revenue data...</div>
+                )}
+              </div>
+
+              <div className="month-labels">
+                {filteredSales.map((item) => (
+                  <span key={item.month}>{monthLabel(item.month)}</span>
+                ))}
+              </div>
             </div>
+          </section>
+        )}
 
-            {insights.length > 0 ? (
+        {/* PRODUCTS */}
 
-              insights.map(
-                (insight, index) => (
+        {showProductsTable && (
+          <section className="charts-grid single">
+            <div className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Product performance</h2>
+                  <p>Revenue contribution by product</p>
+                </div>
+              </div>
 
-                  <div
-                    className="insight"
-                    key={`${insight.title}-${index}`}
-                  >
+              <div className="table-controls">
+                <div className="search-field">
+                  <IconSearch />
+                  <input
+                    type="text"
+                    placeholder="Search products"
+                    value={productQuery}
+                    onChange={(e) => setProductQuery(e.target.value)}
+                  />
+                </div>
 
-                    <div
-                      className={`insight-icon ${insight.type}-icon`}
-                    >
+                <select
+                  className="sort-select"
+                  value={productSort}
+                  onChange={(e) => setProductSort(e.target.value as ProductSort)}
+                >
+                  <option value="revenue-desc">Revenue: high to low</option>
+                  <option value="revenue-asc">Revenue: low to high</option>
+                  <option value="variance-desc">Variance: high to low</option>
+                  <option value="variance-asc">Variance: low to high</option>
+                </select>
+              </div>
 
-                      {insight.type ===
-                      'positive'
-                        ? '↑'
-                        : insight.type ===
-                            'warning'
-                          ? '!'
-                          : '◆'}
+              <div className="product-table">
+                <div className="product-row product-header">
+                  <span>Product</span>
+                  <span>Revenue</span>
+                  <span>Forecast variance</span>
+                </div>
 
+                {filteredProducts.length > 0 ? (
+                  filteredProducts.map((item) => {
+                    const variance = productVariance(item)
+                    const varianceClass =
+                      variance > 0 ? 'positive' : variance < 0 ? 'negative' : 'neutral'
+
+                    return (
+                      <div className="product-row" key={item.product}>
+                        <div className="product-name">
+                          <strong>{item.product}</strong>
+                          <span>{item.actual_units.toLocaleString()} actual units</span>
+                        </div>
+
+                        <strong>¥{(item.revenue / 1_000_000).toFixed(2)}M</strong>
+
+                        <span className={varianceClass}>
+                          {variance > 0 ? '+' : ''}
+                          {variance.toFixed(1)}%
+                        </span>
+                      </div>
+                    )
+                  })
+                ) : products.length === 0 ? (
+                  <div className="chart-loading">Loading product data...</div>
+                ) : (
+                  <div className="empty-state">No products match "{productQuery}".</div>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* INVENTORY RISK */}
+
+        {showInventoryTable && (
+          <section className="charts-grid single">
+            <div className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Inventory risk</h2>
+                  <p>Products ranked by absolute forecast variance — the biggest gaps carry the most over/under-stock risk</p>
+                </div>
+              </div>
+
+              <div className="product-table">
+                <div className="product-row product-header">
+                  <span>Product</span>
+                  <span>Revenue</span>
+                  <span>Forecast variance</span>
+                </div>
+
+                {inventoryRisk.length > 0 ? (
+                  inventoryRisk.map((item) => {
+                    const variance = productVariance(item)
+                    const varianceClass =
+                      variance > 0 ? 'positive' : variance < 0 ? 'negative' : 'neutral'
+
+                    return (
+                      <div className="product-row" key={item.product}>
+                        <div className="product-name">
+                          <strong>{item.product}</strong>
+                          <span>{item.actual_units.toLocaleString()} actual units</span>
+                        </div>
+
+                        <strong>¥{(item.revenue / 1_000_000).toFixed(2)}M</strong>
+
+                        <span className={varianceClass}>
+                          {variance > 0 ? '+' : ''}
+                          {variance.toFixed(1)}%
+                        </span>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div className="chart-loading">Loading product data...</div>
+                )}
+              </div>
+
+              <div className="forecast-caveat">
+                This view is derived from forecast-vs-actual variance, not a live inventory
+                feed — there's no stock-on-hand data in the current schema.
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* CUSTOMERS */}
+
+        {showCustomersPlaceholder && (
+          <section className="charts-grid single">
+            <div className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Customers</h2>
+                  <p>Customer-level breakdown</p>
+                </div>
+              </div>
+
+              <div className="empty-state">
+                Customer-level analytics needs a dedicated backend endpoint — today's
+                API only returns product-level aggregates. Add a{' '}
+                <code>/api/customers</code> route grouping by customer to unlock this
+                view.
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* AI INSIGHTS */}
+
+        {showInsights && (
+          <section className="charts-grid single">
+            <div className="panel insights-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>AI insights</h2>
+                  <p>Automated recommendations</p>
+                </div>
+              </div>
+
+              {insights.length > 0 ? (
+                insights.map((insight, index) => (
+                  <div className="insight" key={`${insight.title}-${index}`}>
+                    <div className={`insight-icon ${insight.type}-icon`}>
+                      {insight.type === 'positive' ? '↑' : insight.type === 'warning' ? '!' : '◆'}
                     </div>
 
                     <div>
-
-                      <strong>
-                        {insight.title}
-                      </strong>
-
-                      <p>
-                        {insight.message}
-                      </p>
-
+                      <strong>{insight.title}</strong>
+                      <p>{insight.message}</p>
                     </div>
-
                   </div>
-
-                ),
-              )
-
-            ) : (
-
-              <div className="chart-loading">
-                Loading AI insights...
-              </div>
-
-            )}
-
-          </div>
-
-        </section>
-
+                ))
+              ) : (
+                <div className="chart-loading">Loading AI insights...</div>
+              )}
+            </div>
+          </section>
+        )}
       </main>
-
     </div>
   )
 }
