@@ -368,3 +368,88 @@ def get_sarima_forecast(
         _FORECAST_CACHE[key] = result
 
     return result
+
+
+# =============================================================================
+# FORECAST LAB — slice any product/customer out of get_sales_data() and
+# forecast just that series. This is what backs the customizable Forecast
+# Lab panel: the dashboard's default KPIs still call get_sarima_forecast()
+# directly (dimension="total" here reproduces that exact series_name,
+# "revenue_total", so nothing about the existing behaviour changes).
+# =============================================================================
+
+def get_forecast_options():
+    """Distinct products/customers the Forecast Lab can slice a series by."""
+    df = get_sales_data()
+    return {
+        "products": sorted(df["product"].dropna().unique().tolist()),
+        "customers": sorted(df["customer"].dropna().unique().tolist()),
+    }
+
+
+def _slice_series(dimension="total", dimension_value=None):
+    """Collapse get_sales_data() down to a single monthly series.
+
+    dimension="total" aggregates everything (dimension_value is ignored).
+    dimension="product" / "customer" filters to one dimension_value first.
+    Returns a month-level frame with both revenue and actual_units summed,
+    so the caller can forecast either column without a second query.
+    """
+    df = get_sales_data()
+
+    if dimension == "product":
+        if not dimension_value:
+            raise ValueError("dimension_value is required when dimension='product'")
+        df = df[df["product"] == dimension_value]
+    elif dimension == "customer":
+        if not dimension_value:
+            raise ValueError("dimension_value is required when dimension='customer'")
+        df = df[df["customer"] == dimension_value]
+    elif dimension != "total":
+        raise ValueError(f"unknown dimension: {dimension!r}")
+
+    if df.empty:
+        raise ValueError(f"no rows for dimension={dimension!r} value={dimension_value!r}")
+
+    return (
+        df.groupby("month", as_index=False)
+        .agg(revenue=("revenue", "sum"), actual_units=("actual_units", "sum"))
+    )
+
+
+def get_sarima_forecast_for(
+    dimension="total",
+    dimension_value=None,
+    value_col="revenue",
+    horizon=12,
+    fast=True,
+    use_cache=True,
+    debug=False,
+):
+    """Slice a series by dimension/dimension_value, then forecast it.
+
+    dimension="total" + value_col="revenue" reproduces the original
+    whole-company forecast (series_name="revenue_total") the dashboard
+    KPIs already depend on — this function is a strict superset, not a
+    replacement, of calling get_sarima_forecast() directly.
+
+    Raises ValueError before ever touching SARIMA if dimension_value is
+    missing/unmatched — the caller (routes.py) turns that into a clean
+    "error" status rather than a raw 500.
+    """
+    monthly = _slice_series(dimension, dimension_value)
+
+    series_name = (
+        f"{value_col}_total" if dimension == "total"
+        else f"{dimension}:{dimension_value}:{value_col}"
+    )
+
+    return get_sarima_forecast(
+        monthly,
+        horizon=horizon,
+        fast=fast,
+        value_col=value_col,
+        series_name=series_name,
+        use_cache=use_cache,
+        debug=debug,
+    )

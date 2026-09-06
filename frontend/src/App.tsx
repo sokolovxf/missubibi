@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 /*
@@ -34,22 +34,71 @@ type Insight = {
   message: string
 }
 
+type SarimaMetrics = {
+  accuracy_pct: number
+  mase_pooled: number | null
+  mase_fold_mean: number | null
+  bias_pct: number | null
+  pct_folds_beating_naive: number | null
+  n_folds: number
+}
+
+type SarimaDiagScheme = {
+  SARIMA?: SarimaMetrics
+  SeasonalNaive?: SarimaMetrics
+  vs_baseline?: {
+    gap: number | null
+    ci95: [number | null, number | null] | null
+    p: number | null
+    distinguishable: boolean | null
+  }
+  beats_naive?: boolean | null
+}
+
 type ForecastResult = {
-  status: 'idle' | 'running' | 'ok' | 'insufficient_history' | 'error'
+  status: 'idle' | 'running' | 'already_running' | 'ok' | 'insufficient_history' | 'error'
+  job_id?: string
+  params?: {
+    dimension: ForecastDimension
+    dimension_value: string | null
+    value_col: ForecastValueCol
+    horizon: number
+    fast: boolean
+  }
   forecast?: {
+    series: string
+    spec: string
+    horizon: number
     months: string[]
     point: number[]
     lower_90: number[]
     upper_90: number[]
     annual_total: number
     annual_yoy_pct: number | null
+    plausibility_ok: boolean
+    plausibility_detail: string | null
   }
   diagnostics?: {
-    wf1: { SARIMA: { accuracy_pct: number } }
-    wf12: { SARIMA: { accuracy_pct: number }; beats_naive: boolean }
+    wf1: SarimaDiagScheme
+    wf12: SarimaDiagScheme
+    ljung_box_p: number | null
+    residuals_clean: boolean | null
+    negative_predictions_clipped: number
+    fit_warnings: number
+    fit_failures: number
   }
   data_anomalies?: { message: string }[]
+  warnings?: { kind: string; message: string }[]
   message?: string
+  detail?: string
+}
+
+type ForecastDimension = 'total' | 'product' | 'customer'
+type ForecastValueCol = 'revenue' | 'actual_units'
+
+type ForecastOptions = {
+  products: string[]
+  customers: string[]
 }
 
 type ViewId =
@@ -60,6 +109,7 @@ type ViewId =
   | 'products'
   | 'customers'
   | 'accuracy'
+  | 'lab'
 
 type PeriodId = 'all' | '6' | '12' | '24'
 
@@ -133,6 +183,14 @@ const IconChevron = ({ size = 14 }: IconProps) => (
   </svg>
 )
 
+const IconFlask = ({ size = 18 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <path d="M9 2v6.3L4.2 17a2 2 0 0 0 1.8 2.9h12a2 2 0 0 0 1.8-2.9L15 8.3V2" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M7 2h10" strokeLinecap="round" />
+    <path d="M6.7 14.5h10.6" strokeLinecap="round" />
+  </svg>
+)
+
 const IconSearch = ({ size = 16 }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
     <circle cx="11" cy="11" r="7" />
@@ -154,6 +212,7 @@ const NAV_ITEMS: { id: ViewId; label: string; icon: (p: IconProps) => JSX.Elemen
   { id: 'products', label: 'Products', icon: IconLayers },
   { id: 'customers', label: 'Customers', icon: IconUsers },
   { id: 'accuracy', label: 'Forecast accuracy', icon: IconTarget },
+  { id: 'lab', label: 'Forecast lab', icon: IconFlask },
 ]
 
 const PERIOD_OPTIONS: { id: PeriodId; label: string }[] = [
@@ -192,6 +251,72 @@ const VIEW_META: Record<ViewId, { title: string; subtitle: string }> = {
     title: 'Forecast accuracy',
     subtitle: '1-month vs 12-month validation results for the SARIMA model',
   },
+  lab: {
+    title: 'Forecast lab',
+    subtitle: 'Run the SARIMA engine directly against any product, customer, or the whole company',
+  },
+}
+
+/*
+ * ---------------------------------------------------------
+ * FORECAST LAB CHART — history (solid line) feeding into the
+ * SARIMA point forecast (dashed) with its 90% band shaded
+ * behind it. Pure/stateless, so it lives outside App().
+ * ---------------------------------------------------------
+ */
+
+type LabChartProps = {
+  history: SalesData[]
+  forecast: NonNullable<ForecastResult['forecast']>
+  valueCol: ForecastValueCol
+}
+
+const LabForecastChart = ({ history, forecast, valueCol }: LabChartProps) => {
+  const width = 600
+  const height = 200
+  const pad = 10
+
+  const histValues = history.map((h) => (valueCol === 'revenue' ? h.revenue : h.actual_units))
+
+  const allValues = [...histValues, ...forecast.upper_90, ...forecast.lower_90, ...forecast.point]
+  const max = allValues.length ? Math.max(...allValues) : 1
+  const min = allValues.length ? Math.min(...allValues) : 0
+  const range = Math.max(max - min, 1)
+
+  const totalPoints = histValues.length + forecast.point.length
+  const xFor = (i: number) =>
+    totalPoints > 1 ? (i / (totalPoints - 1)) * (width - pad * 2) + pad : width / 2
+  const yFor = (v: number) => height - ((v - min) / range) * (height - pad * 2) - pad
+
+  const histPoints = histValues.map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ')
+
+  const fStart = histValues.length
+  const pointPoints = forecast.point.map((v, i) => `${xFor(fStart + i)},${yFor(v)}`).join(' ')
+  const upperPoints = forecast.upper_90.map((v, i) => `${xFor(fStart + i)},${yFor(v)}`)
+  const lowerPoints = forecast.lower_90.map((v, i) => `${xFor(fStart + i)},${yFor(v)}`).reverse()
+  const bandPoints = [...upperPoints, ...lowerPoints].join(' ')
+
+  return (
+    <div className="lab-chart">
+      <svg className="lab-chart-svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        {bandPoints && <polygon points={bandPoints} className="lab-chart-band" />}
+        {histPoints && <polyline points={histPoints} className="lab-chart-history" fill="none" />}
+        {pointPoints && <polyline points={pointPoints} className="lab-chart-forecast" fill="none" />}
+      </svg>
+
+      <div className="lab-chart-labels">
+        <span>{history[0]?.month ?? ''}</span>
+        <span>{history[history.length - 1]?.month ?? forecast.months[0]}</span>
+        <span>{forecast.months[forecast.months.length - 1] ?? ''}</span>
+      </div>
+
+      <div className="chart-legend">
+        <span><i className="legend-dot actual-dot" />History</span>
+        <span><i className="legend-dot forecast-dot" style={{ opacity: 1, background: 'var(--accent)' }} />Forecast</span>
+        <span><i className="legend-dot" style={{ background: 'var(--accent)', opacity: 0.2 }} />90% interval</span>
+      </div>
+    </div>
+  )
 }
 
 function App() {
@@ -214,6 +339,17 @@ function App() {
 
   const [productQuery, setProductQuery] = useState('')
   const [productSort, setProductSort] = useState<ProductSort>('revenue-desc')
+
+  // --- Forecast Lab: its own job_id ("lab") so runs here never touch
+  // the "default" job the Overview/Accuracy views are polling. ---
+  const [labOptions, setLabOptions] = useState<ForecastOptions>({ products: [], customers: [] })
+  const [labDimension, setLabDimension] = useState<ForecastDimension>('total')
+  const [labDimensionValue, setLabDimensionValue] = useState('')
+  const [labValueCol, setLabValueCol] = useState<ForecastValueCol>('revenue')
+  const [labHorizon, setLabHorizon] = useState(12)
+  const [labFast, setLabFast] = useState(true)
+  const [labResult, setLabResult] = useState<ForecastResult>({ status: 'idle' })
+  const labPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     // Get dashboard KPI data
@@ -317,6 +453,70 @@ function App() {
     }
   }, [])
 
+  // Load the product/customer picker options once the Lab is opened.
+  useEffect(() => {
+    if (activeView !== 'lab') return
+    if (labOptions.products.length > 0 || labOptions.customers.length > 0) return
+
+    fetch('http://127.0.0.1:8100/api/forecast/options')
+      .then((r) => r.json())
+      .then((data: ForecastOptions) => setLabOptions(data))
+      .catch(() => {})
+  }, [activeView, labOptions])
+
+  // Stop polling the lab job if the component unmounts mid-run.
+  useEffect(() => {
+    return () => {
+      if (labPollRef.current) clearInterval(labPollRef.current)
+    }
+  }, [])
+
+  const runLabForecast = () => {
+    if (labDimension !== 'total' && !labDimensionValue) return
+
+    if (labPollRef.current) {
+      clearInterval(labPollRef.current)
+      labPollRef.current = null
+    }
+
+    const body = {
+      job_id: 'lab',
+      dimension: labDimension,
+      dimension_value: labDimension === 'total' ? null : labDimensionValue,
+      value_col: labValueCol,
+      horizon: labHorizon,
+      fast: labFast,
+    }
+
+    fetch('http://127.0.0.1:8100/api/forecast/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(() => {
+        setLabResult({ status: 'running' })
+
+        const poll = () => {
+          fetch('http://127.0.0.1:8100/api/forecast?job_id=lab')
+            .then((r) => r.json())
+            .then((data: ForecastResult) => {
+              setLabResult(data)
+              if (data.status !== 'running' && labPollRef.current) {
+                clearInterval(labPollRef.current)
+                labPollRef.current = null
+              }
+            })
+            .catch(() => {
+              if (labPollRef.current) clearInterval(labPollRef.current)
+            })
+        }
+
+        labPollRef.current = setInterval(poll, 5000)
+        poll()
+      })
+      .catch(() => setLabResult({ status: 'error', message: 'Could not start forecast.' }))
+  }
+
   /*
    * ---------------------------------------------------------
    * PERIOD FILTER — drives every chart and KPI below, so
@@ -412,7 +612,7 @@ function App() {
    */
 
   const sarimaWf1Accuracy =
-    forecast.status === 'ok' ? forecast.diagnostics?.wf1.SARIMA.accuracy_pct : undefined
+    forecast.status === 'ok' ? forecast.diagnostics?.wf1.SARIMA?.accuracy_pct : undefined
 
   const accuracyIsPlaceholder = sarimaWf1Accuracy === undefined
   const displayedAccuracy = sarimaWf1Accuracy ?? dashboard.forecast_accuracy
@@ -823,12 +1023,12 @@ function App() {
                       </div>
 
                       <div>
-                        <strong>{forecast.diagnostics?.wf1.SARIMA.accuracy_pct}%</strong>
+                        <strong>{forecast.diagnostics?.wf1.SARIMA?.accuracy_pct}%</strong>
                         <span>1-month accuracy (validated)</span>
                       </div>
 
                       <div>
-                        <strong>{forecast.diagnostics?.wf12.SARIMA.accuracy_pct}%</strong>
+                        <strong>{forecast.diagnostics?.wf12.SARIMA?.accuracy_pct}%</strong>
                         <span>12-month accuracy</span>
                       </div>
                     </div>
@@ -852,13 +1052,13 @@ function App() {
                         <div className="accuracy-row">
                           <span>WF1 (1-month-ahead validation)</span>
                           <strong className="positive">
-                            {forecast.diagnostics?.wf1.SARIMA.accuracy_pct}% — beats naive baseline
+                            {forecast.diagnostics?.wf1.SARIMA?.accuracy_pct}% — beats naive baseline
                           </strong>
                         </div>
                         <div className="accuracy-row">
                           <span>WF12 (12-month-ahead validation)</span>
                           <strong className="negative">
-                            {forecast.diagnostics?.wf12.SARIMA.accuracy_pct}% — does not beat naive baseline
+                            {forecast.diagnostics?.wf12.SARIMA?.accuracy_pct}% — does not beat naive baseline
                           </strong>
                         </div>
                       </div>
@@ -1109,6 +1309,262 @@ function App() {
                 <div className="chart-loading">Loading AI insights...</div>
               )}
             </div>
+          </section>
+        )}
+
+        {/* FORECAST LAB */}
+
+        {activeView === 'lab' && (
+          <section className="charts-grid single">
+            <div className="panel lab-controls">
+              <div className="panel-header">
+                <div>
+                  <h2>Run configuration</h2>
+                  <p>Pick a series and validation depth, then run the SARIMA engine directly</p>
+                </div>
+              </div>
+
+              <div className="lab-form">
+                <label>
+                  Series
+                  <select
+                    value={labDimension}
+                    onChange={(e) => {
+                      setLabDimension(e.target.value as ForecastDimension)
+                      setLabDimensionValue('')
+                    }}
+                  >
+                    <option value="total">Total company</option>
+                    <option value="product">By product</option>
+                    <option value="customer">By customer</option>
+                  </select>
+                </label>
+
+                {labDimension !== 'total' && (
+                  <label>
+                    {labDimension === 'product' ? 'Product' : 'Customer'}
+                    <select
+                      value={labDimensionValue}
+                      onChange={(e) => setLabDimensionValue(e.target.value)}
+                    >
+                      <option value="">Select…</option>
+                      {(labDimension === 'product' ? labOptions.products : labOptions.customers).map(
+                        (v) => (
+                          <option key={v} value={v}>
+                            {v}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                )}
+
+                <label>
+                  Value
+                  <select
+                    value={labValueCol}
+                    onChange={(e) => setLabValueCol(e.target.value as ForecastValueCol)}
+                  >
+                    <option value="revenue">Revenue</option>
+                    <option value="actual_units">Units</option>
+                  </select>
+                </label>
+
+                <label>
+                  Horizon (months)
+                  <input
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={labHorizon}
+                    onChange={(e) => setLabHorizon(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </label>
+
+                <label className="lab-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={labFast}
+                    onChange={(e) => setLabFast(e.target.checked)}
+                  />
+                  Fast mode (smaller order search — uncheck to match the notebook exactly, slower)
+                </label>
+
+                <button
+                  className="lab-run-button"
+                  onClick={runLabForecast}
+                  disabled={labResult.status === 'running' || (labDimension !== 'total' && !labDimensionValue)}
+                >
+                  {labResult.status === 'running' ? 'Running… (40–90s)' : 'Run forecast'}
+                </button>
+              </div>
+            </div>
+
+            {labResult.status === 'idle' && (
+              <div className="panel">
+                <div className="chart-loading">Configure a run above and hit "Run forecast".</div>
+              </div>
+            )}
+
+            {labResult.status === 'running' && (
+              <div className="panel">
+                <div className="chart-loading">Fitting SARIMA candidates — this takes 40–90 seconds…</div>
+              </div>
+            )}
+
+            {labResult.status === 'insufficient_history' && (
+              <div className="panel">
+                <div className="chart-loading">{labResult.detail ?? labResult.message}</div>
+              </div>
+            )}
+
+            {(labResult.status === 'error' || labResult.status === 'already_running') && (
+              <div className="panel">
+                <div className="chart-loading">
+                  {labResult.message ?? 'Another run is already in progress — wait for it to finish.'}
+                </div>
+              </div>
+            )}
+
+            {labResult.status === 'ok' && labResult.forecast && (
+              <>
+                <div className="panel">
+                  <div className="panel-header">
+                    <div>
+                      <h2>{labResult.forecast.series}</h2>
+                      <p>
+                        {labResult.forecast.spec} · {labResult.forecast.horizon}-month forecast from{' '}
+                        {labResult.forecast.months[0]}
+                      </p>
+                    </div>
+                  </div>
+
+                  <LabForecastChart
+                    history={filteredSales}
+                    forecast={labResult.forecast}
+                    valueCol={labValueCol}
+                  />
+
+                  <div className="forecast-meta">
+                    <div>
+                      <strong>
+                        {labResult.forecast.annual_total.toLocaleString(undefined, {
+                          maximumFractionDigits: 0,
+                        })}
+                      </strong>
+                      <span>Forecast total ({labResult.forecast.horizon}mo)</span>
+                    </div>
+
+                    <div>
+                      <strong>
+                        {labResult.forecast.annual_yoy_pct !== null
+                          ? `${labResult.forecast.annual_yoy_pct > 0 ? '+' : ''}${labResult.forecast.annual_yoy_pct}%`
+                          : '—'}
+                      </strong>
+                      <span>YoY vs prior fiscal year</span>
+                    </div>
+
+                    <div>
+                      <strong className={labResult.forecast.plausibility_ok ? 'positive' : 'negative'}>
+                        {labResult.forecast.plausibility_ok ? 'Passed' : 'Flagged'}
+                      </strong>
+                      <span>Plausibility screen</span>
+                    </div>
+                  </div>
+
+                  {!labResult.forecast.plausibility_ok && labResult.forecast.plausibility_detail && (
+                    <div className="forecast-caveat">{labResult.forecast.plausibility_detail}</div>
+                  )}
+                </div>
+
+                <div className="panel">
+                  <div className="panel-header">
+                    <div>
+                      <h2>Validation</h2>
+                      <p>SARIMA vs seasonal-naive baseline, walk-forward</p>
+                    </div>
+                  </div>
+
+                  <div className="lab-diag-table">
+                    <div className="lab-diag-row lab-diag-header">
+                      <span>Scheme</span>
+                      <span>SARIMA</span>
+                      <span>Naive</span>
+                      <span>Beats naive?</span>
+                      <span>Significant?</span>
+                    </div>
+
+                    {(['wf1', 'wf12'] as const).map((scheme) => {
+                      const d = labResult.diagnostics?.[scheme]
+                      if (!d) return null
+
+                      return (
+                        <div className="lab-diag-row" key={scheme}>
+                          <span>{scheme === 'wf1' ? 'WF1 (1-month)' : 'WF12 (12-month)'}</span>
+                          <span>{d.SARIMA ? `${d.SARIMA.accuracy_pct}%` : '—'}</span>
+                          <span>{d.SeasonalNaive ? `${d.SeasonalNaive.accuracy_pct}%` : '—'}</span>
+                          <span className={d.beats_naive ? 'positive' : 'negative'}>
+                            {d.beats_naive ? 'Yes' : 'No'}
+                          </span>
+                          <span>
+                            {d.vs_baseline?.distinguishable === null ||
+                            d.vs_baseline?.distinguishable === undefined
+                              ? '—'
+                              : d.vs_baseline.distinguishable
+                              ? 'Yes'
+                              : 'No'}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  <div className="accuracy-row">
+                    <span>Ljung-Box residual check</span>
+                    <strong className={labResult.diagnostics?.residuals_clean ? 'positive' : 'negative'}>
+                      {labResult.diagnostics?.ljung_box_p !== null &&
+                      labResult.diagnostics?.ljung_box_p !== undefined
+                        ? `p=${labResult.diagnostics.ljung_box_p} — ${
+                            labResult.diagnostics.residuals_clean ? 'clean' : 'autocorrelated'
+                          }`
+                        : '—'}
+                    </strong>
+                  </div>
+                </div>
+
+                {((labResult.data_anomalies && labResult.data_anomalies.length > 0) ||
+                  (labResult.warnings && labResult.warnings.length > 0)) && (
+                  <div className="panel">
+                    <div className="panel-header">
+                      <div>
+                        <h2>Notes</h2>
+                        <p>Data anomalies and engine warnings from this run</p>
+                      </div>
+                    </div>
+
+                    {labResult.data_anomalies?.map((a, i) => (
+                      <div className="insight" key={`anom-${i}`}>
+                        <div className="insight-icon warning-icon">!</div>
+                        <div>
+                          <strong>Data anomaly</strong>
+                          <p>{a.message}</p>
+                        </div>
+                      </div>
+                    ))}
+
+                    {labResult.warnings?.map((w, i) => (
+                      <div className="insight" key={`warn-${i}`}>
+                        <div className="insight-icon neutral-icon">◆</div>
+                        <div>
+                          <strong>{w.kind}</strong>
+                          <p>{w.message}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </section>
         )}
       </main>
