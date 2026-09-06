@@ -25,6 +25,11 @@ line items (reasonable, but not verified against how the source system
 actually generates orders). CONFIRM WITH THE TEAM before relying on these
 totals for anything graded/reported.
 
+Confirmed 2026-09-06: a solo run of this query against the live table
+returns 265,135 deduped rows (from ~272k raw). Worth cross-checking this
+number against whatever the dashboard displays once it's live — not a
+red flag, just an unverified data point until then.
+
 ------------------------------------------------------------------------
 ON forecast_units (PLACEHOLDER — not a real model)
 ------------------------------------------------------------------------
@@ -57,8 +62,37 @@ with a trailing \r (Windows-style line endings baked into the source
 data). Left in, the frontend's `new Date(\`${item.month}-01\`)` produces
 an invalid date and breaks the month-axis labels on the revenue chart.
 Stripped in get_sales_data() below, right after pd.read_sql.
+
+------------------------------------------------------------------------
+NOTE (fixed 2026-09-06): get_sales_data() is called independently by
+/api/dashboard, /api/sales, /api/products, and /api/insights — a single
+page load fires all four, and React 18 StrictMode (see frontend's
+main.tsx) double-invokes effects in dev, so that's really up to 8 calls
+per load. Confirmed via EXPLAIN + a solo timed run that the query itself
+is fast (~1.07s for 267,856 rows) and well-planned (table scan -> sort ->
+window aggregate -> materialize CTE, no missing index needed at this
+data volume). The actual incident was concurrent pile-up: repeated page
+loads/refreshes during debugging left ~24 identical copies of this query
+running simultaneously for over an hour, starving each other of
+sort/tmp-table resources on a laptop-class MySQL instance and exhausting
+the SQLAlchemy pool (default 5 base + 10 overflow = 15) via
+QueuePool TimeoutErrors. Root MySQL issue was cleared by killing the
+runaway mysqld process and restarting clean.
+
+Fixed here with an in-memory TTL cache (60s) PLUS a lock around the
+entire cache-check-and-fill block. The lock matters as much as the
+cache: without it, several concurrent requests can all see an empty/
+stale cache at the same instant and each fire their own copy of the
+query before any of them finishes and populates it -- which is exactly
+how the original pile-up happened. With the lock, only one request
+actually queries MySQL per cache miss; the rest block briefly and then
+read the freshly-populated cache. Cache is process-local and resets on
+every uvicorn --reload restart, which is fine for dev.
 ------------------------------------------------------------------------
 """
+
+import threading
+import time
 
 import pandas as pd
 
@@ -90,32 +124,52 @@ _QUERY = """
     WHERE rn = 1
 """
 
+# --- simple in-memory TTL cache with a lock (see module docstring) ---
+_cache: dict = {"df": None, "ts": 0.0}
+_CACHE_TTL_SECONDS = 60
+_cache_lock = threading.Lock()
+
 
 def get_sales_data() -> pd.DataFrame:
-    df = pd.read_sql(_QUERY, engine)
+    now = time.time()
 
-    # year_month comes out of MySQL with a trailing \r on every row
-    # (Windows-style line endings baked into the source data). Left
-    # in, `${month}-01` on the frontend produces an invalid date
-    # string and breaks the chart's month-axis labels. Strip it here
-    # rather than relying on every consumer to know to do it.
-    df["month"] = df["month"].str.strip()
+    with _cache_lock:
+        if _cache["df"] is not None and (now - _cache["ts"]) < _CACHE_TTL_SECONDS:
+            return _cache["df"].copy()
 
-    # Raw rows are transaction-level; collapse to one row per
-    # (month, product, customer), same granularity mock_data.py used.
-    df = (
-        df.groupby(["month", "product", "customer"], as_index=False)
-        .agg(actual_units=("actual_units", "sum"), revenue=("revenue", "sum"))
-    )
+        df = pd.read_sql(_QUERY, engine)
 
-    # --- forecast_units placeholder (see module docstring) ---
-    # Grouped by (product, customer) together, not product alone —
-    # otherwise the lag-1 shift can pull the "previous" value from a
-    # different customer in the same month instead of this customer's
-    # own prior month.
-    df = df.sort_values(["product", "customer", "month"])
-    df["forecast_units"] = df.groupby(["product", "customer"])["actual_units"].shift(1)
-    df["forecast_units"] = df["forecast_units"].fillna(df["actual_units"])
-    df["forecast_units"] = df["forecast_units"].round().astype(int)
+        # year_month comes out of MySQL with a trailing \r on every row
+        # (Windows-style line endings baked into the source data). Left
+        # in, `${month}-01` on the frontend produces an invalid date
+        # string and breaks the chart's month-axis labels. Strip it here
+        # rather than relying on every consumer to know to do it.
+        df["month"] = df["month"].str.strip()
 
-    return df.reset_index(drop=True)
+        # Raw rows are transaction-level; collapse to one row per
+        # (month, product, customer), same granularity mock_data.py used.
+        df = (
+            df.groupby(["month", "product", "customer"], as_index=False)
+            .agg(actual_units=("actual_units", "sum"), revenue=("revenue", "sum"))
+        )
+
+        # --- forecast_units placeholder (see module docstring) ---
+        # Grouped by (product, customer) together, not product alone —
+        # otherwise the lag-1 shift can pull the "previous" value from a
+        # different customer in the same month instead of this customer's
+        # own prior month.
+        df = df.sort_values(["product", "customer", "month"])
+        df["forecast_units"] = df.groupby(["product", "customer"])["actual_units"].shift(1)
+        df["forecast_units"] = df["forecast_units"].fillna(df["actual_units"])
+        df["forecast_units"] = df["forecast_units"].round().astype(int)
+
+        df = df.reset_index(drop=True)
+
+        # Cache a copy so downstream mutation (analytics.py adding
+        # columns, etc.) never corrupts what's stored for the next
+        # request.
+        _cache["df"] = df.copy()
+        _cache["ts"] = now
+
+        return df
+    
