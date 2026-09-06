@@ -51,6 +51,12 @@ so it must be backtick-quoted wherever it's used as a bare identifier in
 raw SQL — used unquoted, it throws a 1064 syntax error at parse time,
 before MySQL even checks whether the table/columns exist. Both
 references below are now quoted.
+
+NOTE (fixed 2026-09-06): every year_month value also comes out of MySQL
+with a trailing \r (Windows-style line endings baked into the source
+data). Left in, the frontend's `new Date(\`${item.month}-01\`)` produces
+an invalid date and breaks the month-axis labels on the revenue chart.
+Stripped in get_sales_data() below, right after pd.read_sql.
 ------------------------------------------------------------------------
 """
 
@@ -87,6 +93,13 @@ _QUERY = """
 
 def get_sales_data() -> pd.DataFrame:
     df = pd.read_sql(_QUERY, engine)
+
+    # year_month comes out of MySQL with a trailing \r on every row
+    # (Windows-style line endings baked into the source data). Left
+    # in, `${month}-01` on the frontend produces an invalid date
+    # string and breaks the chart's month-axis labels. Strip it here
+    # rather than relying on every consumer to know to do it.
+    df["month"] = df["month"].str.strip()
 
     # Raw rows are transaction-level; collapse to one row per
     # (month, product, customer), same granularity mock_data.py used.
