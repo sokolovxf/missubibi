@@ -241,3 +241,131 @@ def get_ai_insights():
         )
 
     return insights
+
+
+# =============================================================================
+# SARIMA FORECAST
+# =============================================================================
+# Wraps the v7 SARIMA engine (app/services/sarima_engine.py, extracted verbatim
+# from backend/sarima_sales_forecast_v7.py) behind one function.
+#
+# WHAT IT EXPECTS
+#   A monthly DataFrame in this project's own shape - the same frame
+#   get_sales_data() returns:
+#
+#     month          "2025-01" / a date / anything pd.to_datetime parses  (required)
+#     revenue        numeric                                              (preferred)
+#     actual_units   numeric - used only if there is no revenue column
+#
+#   Extra columns (product, customer, forecast_units) are ignored. Rows are
+#   summed per calendar month, so transaction-level rows work too.
+#
+#   HISTORY IS THE BINDING CONSTRAINT. The walk-forward validation needs at
+#   least MIN_TRAIN_MONTHS + horizon = 36 months, and those months must fall in
+#   COMPLETE fiscal years (April-March). 48 months / 4 whole fiscal years is
+#   what the model was tuned on. The 12-month mock data in app/data/mock_data.py
+#   is far short of this, so this function returns status="insufficient_history"
+#   on it - by design, not as a failure.
+#
+# COST
+#   A run fits several hundred SARIMA models: roughly 40-90 seconds on 48 months
+#   of history. Results are cached per input frame, but the FIRST call is slow.
+#   Do NOT wire this straight into a request handler - call it from a background
+#   task or a scheduled job and serve the cached dict.
+# =============================================================================
+
+import hashlib
+
+import pandas as pd
+
+from app.services import sarima_engine
+
+_FORECAST_CACHE: dict = {}
+_CACHE_LIMIT = 8
+
+
+def _frame_fingerprint(df, horizon, fast, value_col, month_col):
+    """Cache key. Uses the frame's values, so a changed dataset misses the cache."""
+    h = hashlib.sha256()
+    h.update(repr((sorted(map(str, df.columns)), len(df), horizon,
+                   bool(fast), value_col, month_col)).encode())
+    try:
+        h.update(pd.util.hash_pandas_object(df, index=False).values.tobytes())
+    except Exception:
+        h.update(df.to_csv(index=False).encode("utf-8", "ignore"))
+    return h.hexdigest()
+
+
+def get_sarima_forecast(
+    sales_df=None,
+    *,
+    horizon=12,
+    fast=True,
+    value_col=None,
+    month_col=None,
+    series_name="revenue_total",
+    use_cache=True,
+    debug=False,
+):
+    """Forecast the next `horizon` months and report how much to trust it.
+
+    Args:
+        sales_df:    monthly DataFrame (see the header above). Defaults to
+                     get_sales_data() so the signature matches the other
+                     functions in this module.
+        horizon:     months to forecast. 12 = one fiscal year.
+        fast:        smaller order-search grid. True is the sane default for a
+                     backend; False matches the notebook exactly and is slower.
+        value_col:   force the column to forecast. Auto-detected otherwise.
+        month_col:   force the month column. Auto-detected otherwise.
+        use_cache:   reuse a previous result for an identical frame.
+        debug:       print the engine's notes as they are raised.
+
+    Returns a JSON-serialisable dict. Always has "status"; the caller should
+    branch on it rather than assume a forecast came back:
+
+        status  "ok"                    -> "forecast" and "diagnostics" are populated
+                "insufficient_history"  -> "detail" says what is missing
+                "error"                 -> "message" carries the exception
+
+        forecast        spec, months, point, lower_90, upper_90, annual_total,
+                        annual_yoy_pct, plausibility_ok
+        diagnostics     wf1 / wf12, each with accuracy_pct, mase_pooled,
+                        bias_pct (negative = forecast runs HIGH),
+                        beats_naive, and a bootstrap vs_baseline block;
+                        plus ljung_box_p, negative_predictions_clipped
+        fiscal_years    which fiscal years were used, and the one forecast
+        data_anomalies  fiscal years that deviate sharply from the median
+        warnings        [{kind, message}] raised during the run
+    """
+    if sales_df is None:
+        sales_df = get_sales_data()
+
+    key = None
+    if use_cache:
+        try:
+            key = _frame_fingerprint(sales_df, horizon, fast, value_col, month_col)
+            if key in _FORECAST_CACHE:
+                cached = dict(_FORECAST_CACHE[key])
+                cached["cached"] = True
+                return cached
+        except Exception:
+            key = None                      # an unhashable frame just skips the cache
+
+    result = sarima_engine.run_forecast(
+        sales_df,
+        month_col=month_col,
+        value_col=value_col,
+        horizon=horizon,
+        fast=fast,
+        series_name=series_name,
+        debug=debug,
+    )
+    result["cached"] = False
+
+    if key is not None and result.get("status") == "ok":
+        if len(_FORECAST_CACHE) >= _CACHE_LIMIT:
+            _FORECAST_CACHE.pop(next(iter(_FORECAST_CACHE)))
+        _FORECAST_CACHE[key] = result
+
+    return result
