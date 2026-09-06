@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "holidays>=0.103",
     "pandas>=3.0.5",
+    "pymysql>=1.2.0",
     "python-dotenv>=1.2.3",
     "scipy>=1.18.1",
     "sqlalchemy>=2.0.52",

@@ -87,8 +87,8 @@ def get_sales_data() -> pd.DataFrame:
     )
 
     # --- forecast_units placeholder (see module docstring) ---
-    df = df.sort_values(["product", "month"])
-    df["forecast_units"] = df.groupby("product")["actual_units"].shift(1)
+    df = df.sort_values(["product", "customer", "month"])
+    df["forecast_units"] = df.groupby(["product", "customer"])["actual_units"].shift(1)
     df["forecast_units"] = df["forecast_units"].fillna(df["actual_units"])
     df["forecast_units"] = df["forecast_units"].round().astype(int)
 
