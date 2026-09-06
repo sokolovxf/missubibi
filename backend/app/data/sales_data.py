@@ -35,14 +35,23 @@ history, and takes 40-90 seconds per run. It isn't designed to produce a
 number for every (month, product) row the way the mock data faked it.
 
 Until real forecasts are wired in as a separate, cached/background step,
-this uses a naive lag-1 placeholder: each product's "forecast" for a given
-month is just its own actual_units from the previous month (first month
-per product falls back to its own actual, i.e. 0% error). This is
-deterministic — the same on every reload — but it is NOT a model.
-Any forecast_accuracy / forecast_risk figure downstream is only as
-meaningful as this placeholder, which is to say: not very. Replace this
-column with real get_sarima_forecast() output before anything user-facing
-treats it as a real forecast.
+this uses a naive lag-1 placeholder: each product+customer's "forecast"
+for a given month is just its own actual_units from the previous month
+(first month per product+customer falls back to its own actual, i.e. 0%
+error). This is deterministic — the same on every reload — but it is NOT
+a model. Any forecast_accuracy / forecast_risk figure downstream is only
+as meaningful as this placeholder, which is to say: not very. Replace
+this column with real get_sarima_forecast() output before anything
+user-facing treats it as a real forecast.
+
+------------------------------------------------------------------------
+NOTE (fixed 2026-09-06): `year_month` is a MySQL reserved word (the
+compound INTERVAL unit specifier, same family as DAY_HOUR/HOUR_MINUTE),
+so it must be backtick-quoted wherever it's used as a bare identifier in
+raw SQL — used unquoted, it throws a 1064 syntax error at parse time,
+before MySQL even checks whether the table/columns exist. Both
+references below are now quoted.
+------------------------------------------------------------------------
 """
 
 import pandas as pd
@@ -52,7 +61,7 @@ from app.database import engine
 _QUERY = """
     WITH deduped AS (
         SELECT
-            year_month,
+            `year_month`,
             product_category_2,
             company_name,
             quantity,
@@ -66,7 +75,7 @@ _QUERY = """
         FROM Sales_Order_Merged
     )
     SELECT
-        year_month          AS month,
+        `year_month`        AS month,
         product_category_2  AS product,
         company_name        AS customer,
         quantity            AS actual_units,
@@ -87,6 +96,10 @@ def get_sales_data() -> pd.DataFrame:
     )
 
     # --- forecast_units placeholder (see module docstring) ---
+    # Grouped by (product, customer) together, not product alone —
+    # otherwise the lag-1 shift can pull the "previous" value from a
+    # different customer in the same month instead of this customer's
+    # own prior month.
     df = df.sort_values(["product", "customer", "month"])
     df["forecast_units"] = df.groupby(["product", "customer"])["actual_units"].shift(1)
     df["forecast_units"] = df["forecast_units"].fillna(df["actual_units"])
