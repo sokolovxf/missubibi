@@ -357,6 +357,373 @@ const SarimaForecastChart = ({ history, forecast, valueCol }: SarimaChartProps) 
   )
 }
 
+/*
+ * ---------------------------------------------------------
+ * SALES PERFORMANCE PANEL — upgraded from a flat actual/forecast
+ * bar chart into a multi-parameter view: grouped bars for actual
+ * vs forecast (or a single revenue bar), a secondary-axis trend
+ * line (forecast accuracy % in units mode, MoM growth % in
+ * revenue mode), a hover tooltip, and a stat strip above the
+ * chart summarizing the period at a glance. Pure/stateless aside
+ * from its own metric toggle, so it lives outside App().
+ * ---------------------------------------------------------
+ */
+
+type SalesPerfMetric = 'units' | 'revenue'
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+
+const spFormatChange = (value: number | null) => {
+  if (value === null || !Number.isFinite(value)) return '—'
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(1)}%`
+}
+
+const spChangeClass = (value: number | null) => {
+  if (value === null || !Number.isFinite(value) || value === 0) return 'sp-neutral'
+  return value > 0 ? 'sp-positive' : 'sp-negative'
+}
+
+const SalesPerformancePanel = ({
+  sales,
+  monthLabel,
+}: {
+  sales: SalesData[]
+  monthLabel: (month: string) => string
+}) => {
+  const [metric, setMetric] = useState<SalesPerfMetric>('units')
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
+
+  const n = sales.length
+
+  /* ---- period-level stats (the "additional parameters") ---- */
+
+  const totalActual = sales.reduce((t, s) => t + s.actual_units, 0)
+  const totalForecast = sales.reduce((t, s) => t + s.forecast_units, 0)
+  const totalRevenue = sales.reduce((t, s) => t + s.revenue, 0)
+
+  const monthlyAccuracy = sales.map((s) =>
+    s.actual_units > 0
+      ? clamp(100 - (Math.abs(s.actual_units - s.forecast_units) / s.actual_units) * 100, 0, 100)
+      : null,
+  )
+  const validAccuracies = monthlyAccuracy.filter((v): v is number => v !== null)
+  const avgAccuracy =
+    validAccuracies.length > 0
+      ? validAccuracies.reduce((t, v) => t + v, 0) / validAccuracies.length
+      : null
+
+  const monthlyGrowth = sales.map((s, i) => {
+    if (i === 0 || sales[i - 1].revenue <= 0) return null
+    return ((s.revenue - sales[i - 1].revenue) / sales[i - 1].revenue) * 100
+  })
+  const validGrowth = monthlyGrowth.filter((v): v is number => v !== null)
+  const avgGrowth =
+    validGrowth.length > 0 ? validGrowth.reduce((t, v) => t + v, 0) / validGrowth.length : null
+
+  const bestMonth = sales.reduce<SalesData | null>(
+    (best, s) => (!best || s.actual_units > best.actual_units ? s : best),
+    null,
+  )
+
+  const netVariance = totalActual > 0 ? ((totalActual - totalForecast) / totalActual) * 100 : null
+
+  /* ---- chart geometry ---- */
+
+  const width = 760
+  const height = 300
+  const padLeft = 48
+  const padRight = 48
+  const padTop = 22
+  const padBottom = 46
+  const plotW = width - padLeft - padRight
+  const plotH = height - padTop - padBottom
+
+  const slotW = n > 0 ? plotW / n : plotW
+  const xForIndex = (i: number) => padLeft + slotW * i + slotW / 2
+
+  const primaryValues =
+    metric === 'units'
+      ? sales.flatMap((s) => [s.actual_units, s.forecast_units])
+      : sales.map((s) => s.revenue)
+  const maxPrimary = primaryValues.length > 0 ? Math.max(...primaryValues) * 1.15 : 1
+  const yForPrimary = (v: number) => padTop + plotH - (v / maxPrimary) * plotH
+
+  const secondaryValues = metric === 'units' ? monthlyAccuracy : monthlyGrowth
+  const maxAbsSecondary =
+    metric === 'units'
+      ? 100
+      : Math.max(...secondaryValues.map((v) => (v !== null ? Math.abs(v) : 0)), 10) * 1.2
+
+  const yForSecondary = (v: number) =>
+    metric === 'units'
+      ? padTop + plotH - (v / 100) * plotH
+      : padTop + plotH - ((v + maxAbsSecondary) / (2 * maxAbsSecondary)) * plotH
+
+  const linePoints = secondaryValues
+    .map((v, i) => (v === null ? null : `${xForIndex(i)},${yForSecondary(v)}`))
+    .filter((p): p is string => p !== null)
+    .join(' ')
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1]
+
+  const hovered = hoverIndex !== null ? sales[hoverIndex] : null
+  const hoveredAccuracy = hoverIndex !== null ? monthlyAccuracy[hoverIndex] : null
+  const hoveredGrowth = hoverIndex !== null ? monthlyGrowth[hoverIndex] : null
+
+  return (
+    <div className="sp-root">
+      <style>{`
+        .sp-root { display: flex; flex-direction: column; gap: 16px; }
+        .sp-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .sp-metric-toggle { display: inline-flex; border: 1px solid var(--border, rgba(127,127,127,0.25)); border-radius: 8px; overflow: hidden; }
+        .sp-metric-toggle button { border: none; background: transparent; padding: 6px 14px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em; cursor: pointer; color: var(--muted, #8892a6); transition: background 0.15s, color 0.15s; }
+        .sp-metric-toggle button.sp-active { background: var(--accent, #6366f1); color: #fff; }
+        .sp-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        .sp-stat { border: 1px solid var(--border, rgba(127,127,127,0.18)); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        .sp-stat-label { font-size: 11px; color: var(--muted, #8892a6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .sp-stat-value { font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .sp-stat-sub { font-size: 11px; font-weight: 600; }
+        .sp-positive { color: #22c55e; }
+        .sp-negative { color: #ef4444; }
+        .sp-neutral { color: var(--muted, #8892a6); }
+        .sp-chart-wrap { position: relative; width: 100%; }
+        .sp-chart-svg { width: 100%; height: auto; display: block; overflow: visible; }
+        .sp-grid-line { stroke: var(--border, rgba(127,127,127,0.14)); stroke-width: 1; }
+        .sp-axis-label { fill: var(--muted, #8892a6); font-size: 10px; }
+        .sp-x-label { fill: var(--muted, #8892a6); font-size: 10px; }
+        .sp-bar-actual { fill: url(#spActualGrad); }
+        .sp-bar-forecast { fill: url(#spForecastGrad); }
+        .sp-bar-revenue { fill: url(#spRevenueGrad); }
+        .sp-line { fill: none; stroke: #f5a623; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+        .sp-line-dot { fill: #f5a623; }
+        .sp-hover-rect { fill: transparent; }
+        .sp-hover-rect:hover { fill: var(--border, rgba(127,127,127,0.08)); }
+        .sp-tooltip { position: absolute; top: 4px; pointer-events: none; background: var(--panel-bg, #1a1d27); border: 1px solid var(--border, rgba(127,127,127,0.25)); border-radius: 8px; padding: 8px 10px; font-size: 12px; min-width: 150px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); transform: translateX(-50%); z-index: 5; }
+        .sp-tooltip strong { display: block; margin-bottom: 4px; font-size: 12.5px; }
+        .sp-tooltip-row { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; color: var(--muted, #8892a6); }
+        .sp-tooltip-row span:last-child { color: inherit; font-weight: 600; }
+        .sp-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted, #8892a6); }
+        .sp-legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+      `}</style>
+
+      <div className="sp-toolbar">
+        <div className="sp-metric-toggle">
+          <button
+            className={metric === 'units' ? 'sp-active' : ''}
+            onClick={() => setMetric('units')}
+          >
+            Units
+          </button>
+          <button
+            className={metric === 'revenue' ? 'sp-active' : ''}
+            onClick={() => setMetric('revenue')}
+          >
+            Revenue
+          </button>
+        </div>
+
+        <div className="sp-legend">
+          {metric === 'units' ? (
+            <>
+              <span><i className="sp-legend-dot" style={{ background: 'var(--accent, #6366f1)' }} />Actual</span>
+              <span><i className="sp-legend-dot" style={{ background: 'var(--accent, #6366f1)', opacity: 0.4 }} />Forecast</span>
+              <span><i className="sp-legend-dot" style={{ background: '#f5a623' }} />Accuracy %</span>
+            </>
+          ) : (
+            <>
+              <span><i className="sp-legend-dot" style={{ background: 'var(--accent, #6366f1)' }} />Revenue</span>
+              <span><i className="sp-legend-dot" style={{ background: '#f5a623' }} />MoM growth %</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="sp-stats">
+        <div className="sp-stat">
+          <span className="sp-stat-label">Total units (actual)</span>
+          <span className="sp-stat-value">{totalActual.toLocaleString()}</span>
+          <span className={`sp-stat-sub ${spChangeClass(netVariance)}`}>
+            {netVariance !== null ? `${spFormatChange(netVariance)} vs forecast` : '—'}
+          </span>
+        </div>
+        <div className="sp-stat">
+          <span className="sp-stat-label">Total revenue</span>
+          <span className="sp-stat-value">฿{(totalRevenue / 1_000_000).toFixed(2)}M</span>
+          <span className={`sp-stat-sub ${spChangeClass(avgGrowth)}`}>
+            {avgGrowth !== null ? `${spFormatChange(avgGrowth)} avg MoM` : '—'}
+          </span>
+        </div>
+        <div className="sp-stat">
+          <span className="sp-stat-label">Avg forecast accuracy</span>
+          <span className="sp-stat-value">{avgAccuracy !== null ? `${avgAccuracy.toFixed(1)}%` : '—'}</span>
+          <span className="sp-stat-sub sp-neutral">{validAccuracies.length} months scored</span>
+        </div>
+        <div className="sp-stat">
+          <span className="sp-stat-label">Best month (units)</span>
+          <span className="sp-stat-value">{bestMonth ? monthLabel(bestMonth.month) : '—'}</span>
+          <span className="sp-stat-sub sp-neutral">
+            {bestMonth ? `${bestMonth.actual_units.toLocaleString()} units` : '—'}
+          </span>
+        </div>
+      </div>
+
+      <div className="sp-chart-wrap">
+        {n > 0 ? (
+          <>
+            <svg className="sp-chart-svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="spActualGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--accent, #6366f1)" stopOpacity="0.95" />
+                  <stop offset="100%" stopColor="var(--accent, #6366f1)" stopOpacity="0.55" />
+                </linearGradient>
+                <linearGradient id="spForecastGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--accent, #6366f1)" stopOpacity="0.35" />
+                  <stop offset="100%" stopColor="var(--accent, #6366f1)" stopOpacity="0.12" />
+                </linearGradient>
+                <linearGradient id="spRevenueGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--accent, #6366f1)" stopOpacity="0.95" />
+                  <stop offset="100%" stopColor="var(--accent, #6366f1)" stopOpacity="0.4" />
+                </linearGradient>
+              </defs>
+
+              {gridLines.map((g) => {
+                const y = padTop + plotH * g
+                const val = Math.round(maxPrimary * (1 - g))
+                return (
+                  <g key={g}>
+                    <line x1={padLeft} x2={width - padRight} y1={y} y2={y} className="sp-grid-line" />
+                    <text x={padLeft - 8} y={y + 3} textAnchor="end" className="sp-axis-label">
+                      {val >= 1000 ? `${Math.round(val / 1000)}k` : val}
+                    </text>
+                    <text x={width - padRight + 8} y={y + 3} textAnchor="start" className="sp-axis-label">
+                      {metric === 'units'
+                        ? `${Math.round(100 * (1 - g))}%`
+                        : `${Math.round(maxAbsSecondary * (1 - 2 * g))}%`}
+                    </text>
+                  </g>
+                )
+              })}
+
+              {sales.map((s, i) => {
+                const barGap = slotW * 0.08
+                if (metric === 'units') {
+                  const barW = slotW * 0.32
+                  const actualX = xForIndex(i) - barW - barGap / 2
+                  const forecastX = xForIndex(i) + barGap / 2
+                  const actualY = yForPrimary(s.actual_units)
+                  const forecastY = yForPrimary(s.forecast_units)
+                  return (
+                    <g key={s.month}>
+                      <rect
+                        x={actualX}
+                        y={actualY}
+                        width={barW}
+                        height={Math.max(padTop + plotH - actualY, 0)}
+                        rx={3}
+                        className="sp-bar-actual"
+                      />
+                      <rect
+                        x={forecastX}
+                        y={forecastY}
+                        width={barW}
+                        height={Math.max(padTop + plotH - forecastY, 0)}
+                        rx={3}
+                        className="sp-bar-forecast"
+                      />
+                    </g>
+                  )
+                }
+                const barW = slotW * 0.5
+                const barX = xForIndex(i) - barW / 2
+                const barY = yForPrimary(s.revenue)
+                return (
+                  <rect
+                    key={s.month}
+                    x={barX}
+                    y={barY}
+                    width={barW}
+                    height={Math.max(padTop + plotH - barY, 0)}
+                    rx={3}
+                    className="sp-bar-revenue"
+                  />
+                )
+              })}
+
+              {linePoints && <polyline points={linePoints} className="sp-line" />}
+              {secondaryValues.map((v, i) =>
+                v === null ? null : (
+                  <circle
+                    key={`dot-${i}`}
+                    cx={xForIndex(i)}
+                    cy={yForSecondary(v)}
+                    r={hoverIndex === i ? 3.5 : 2.2}
+                    className="sp-line-dot"
+                  />
+                ),
+              )}
+
+              {sales.map((s, i) => (
+                <text
+                  key={`x-${s.month}`}
+                  x={xForIndex(i)}
+                  y={height - padBottom + 16}
+                  textAnchor="middle"
+                  className="sp-x-label"
+                >
+                  {n <= 14 || i % 2 === 0 ? monthLabel(s.month) : ''}
+                </text>
+              ))}
+
+              {sales.map((s, i) => (
+                <rect
+                  key={`hover-${s.month}`}
+                  x={padLeft + slotW * i}
+                  y={padTop}
+                  width={slotW}
+                  height={plotH}
+                  className="sp-hover-rect"
+                  onMouseEnter={() => setHoverIndex(i)}
+                  onMouseLeave={() => setHoverIndex((cur) => (cur === i ? null : cur))}
+                />
+              ))}
+            </svg>
+
+            {hovered && (
+              <div
+                className="sp-tooltip"
+                style={{ left: `${((hoverIndex! + 0.5) / n) * 100}%` }}
+              >
+                <strong>{monthLabel(hovered.month)}</strong>
+                {metric === 'units' ? (
+                  <>
+                    <div className="sp-tooltip-row"><span>Actual</span><span>{hovered.actual_units.toLocaleString()}</span></div>
+                    <div className="sp-tooltip-row"><span>Forecast</span><span>{hovered.forecast_units.toLocaleString()}</span></div>
+                    <div className="sp-tooltip-row">
+                      <span>Accuracy</span>
+                      <span>{hoveredAccuracy !== null ? `${hoveredAccuracy.toFixed(1)}%` : '—'}</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="sp-tooltip-row"><span>Revenue</span><span>฿{hovered.revenue.toLocaleString()}</span></div>
+                    <div className="sp-tooltip-row">
+                      <span>MoM growth</span>
+                      <span className={spChangeClass(hoveredGrowth)}>{spFormatChange(hoveredGrowth)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="chart-loading">Loading sales data...</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [dashboard, setDashboard] = useState<DashboardData>({
     total_units: 0,
@@ -657,17 +1024,6 @@ function App() {
 
   /*
    * ---------------------------------------------------------
-   * SALES CHART (dynamic: scales to whatever filteredSales holds)
-   * ---------------------------------------------------------
-   */
-
-  const maxSalesValue =
-    filteredSales.length > 0
-      ? Math.max(...filteredSales.flatMap((item) => [item.actual_units, item.forecast_units]))
-      : 200
-
-  /*
-   * ---------------------------------------------------------
    * REVENUE CHART (viewBox-based, scales to container width —
    * dynamic regardless of how many months are in filteredSales)
    * ---------------------------------------------------------
@@ -962,73 +1318,11 @@ function App() {
                 <div className="panel-header">
                   <div>
                     <h2>Sales performance</h2>
-                    <p>Actual vs forecast units</p>
+                    <p>Actual vs forecast, revenue, and accuracy trend for {periodLabel.toLowerCase()}</p>
                   </div>
                 </div>
 
-                <div className="sales-chart">
-                  <div className="y-axis">
-                    <span>{Math.ceil(maxSalesValue / 50) * 50}</span>
-                    <span>{Math.max(Math.ceil(maxSalesValue / 50) * 50 - 50, 0)}</span>
-                    <span>{Math.max(Math.ceil(maxSalesValue / 50) * 50 - 100, 0)}</span>
-                    <span>{Math.max(Math.ceil(maxSalesValue / 50) * 50 - 150, 0)}</span>
-                    <span>0</span>
-                  </div>
-
-                  <div className="chart-container">
-                    <div className="horizontal-lines">
-                      <span />
-                      <span />
-                      <span />
-                      <span />
-                      <span />
-                      <span />
-                    </div>
-
-                    <div className="bar-chart">
-                      {filteredSales.length > 0 ? (
-                        filteredSales.map((item) => {
-                          const actualHeight = (item.actual_units / maxSalesValue) * 100
-                          const forecastHeight = (item.forecast_units / maxSalesValue) * 100
-
-                          return (
-                            <div className="bar-group" key={item.month}>
-                              <div
-                                className="bar actual"
-                                style={{ height: `${actualHeight}%` }}
-                                title={`Actual: ${item.actual_units} units`}
-                              />
-                              <div
-                                className="bar forecast"
-                                style={{ height: `${forecastHeight}%` }}
-                                title={`Forecast: ${item.forecast_units} units`}
-                              />
-                            </div>
-                          )
-                        })
-                      ) : (
-                        <div className="chart-loading">Loading sales data...</div>
-                      )}
-                    </div>
-
-                    <div className="x-axis">
-                      {filteredSales.map((item) => (
-                        <span key={item.month}>{monthLabel(item.month)}</span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="chart-legend">
-                  <span>
-                    <i className="legend-dot actual-dot" />
-                    Actual
-                  </span>
-                  <span>
-                    <i className="legend-dot forecast-dot" />
-                    Forecast
-                  </span>
-                </div>
+                <SalesPerformancePanel sales={filteredSales} monthLabel={monthLabel} />
               </div>
             )}
 
