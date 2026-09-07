@@ -744,6 +744,7 @@ function App() {
 
   const [productQuery, setProductQuery] = useState('')
   const [productSort, setProductSort] = useState<ProductSort>('revenue-desc')
+  const [inventoryQuery, setInventoryQuery] = useState('')
 
   // --- Forecast Lab: its own job_id ("lab") so runs here never touch
   // the "default" job the Overview/Accuracy views are polling. ---
@@ -1088,11 +1089,17 @@ function App() {
   }, [products, productQuery, productSort])
 
   const inventoryRisk = useMemo(() => {
-    return products
+    const q = inventoryQuery.trim().toLowerCase()
+    const ranked = products
+      .filter((p) => p.product.toLowerCase().includes(q))
       .slice()
       .sort((a, b) => Math.abs(productVariance(b)) - Math.abs(productVariance(a)))
-      .slice(0, 10)
-  }, [products])
+
+    // Without a search term, keep the view focused on the top-10 riskiest
+    // products. Once someone searches, show every match instead — capping
+    // at 10 would silently hide the very product they typed in for.
+    return q === '' ? ranked.slice(0, 10) : ranked
+  }, [products, inventoryQuery])
 
   /*
    * ---------------------------------------------------------
@@ -1578,6 +1585,18 @@ function App() {
                 </div>
               </div>
 
+              <div className="table-controls">
+                <div className="search-field">
+                  <IconSearch />
+                  <input
+                    type="text"
+                    placeholder="Search products"
+                    value={inventoryQuery}
+                    onChange={(e) => setInventoryQuery(e.target.value)}
+                  />
+                </div>
+              </div>
+
               <div className="product-table">
                 <div className="product-row product-header">
                   <span>Product</span>
@@ -1585,7 +1604,9 @@ function App() {
                   <span>Forecast variance</span>
                 </div>
 
-                {inventoryRisk.length > 0 ? (
+                {products.length === 0 ? (
+                  <div className="chart-loading">Loading product data...</div>
+                ) : inventoryRisk.length > 0 ? (
                   inventoryRisk.map((item) => {
                     const variance = productVariance(item)
                     const varianceClass =
@@ -1608,11 +1629,14 @@ function App() {
                     )
                   })
                 ) : (
-                  <div className="chart-loading">Loading product data...</div>
+                  <div className="empty-state">No products match "{inventoryQuery}".</div>
                 )}
               </div>
 
               <div className="forecast-caveat">
+                {inventoryQuery.trim() === ''
+                  ? 'Showing the top 10 products by absolute forecast variance. '
+                  : `Showing all ${inventoryRisk.length} match(es) for "${inventoryQuery}". `}
                 This view is derived from forecast-vs-actual variance, not a live inventory
                 feed — there's no stock-on-hand data in the current schema.
               </div>
@@ -1937,3 +1961,4 @@ function App() {
 }
 
 export default App
+
