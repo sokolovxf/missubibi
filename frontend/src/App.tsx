@@ -265,18 +265,38 @@ const VIEW_META: Record<ViewId, { title: string; subtitle: string }> = {
  * ---------------------------------------------------------
  */
 
-type LabChartProps = {
+/*
+ * ---------------------------------------------------------
+ * SARIMA FORECAST CHART — history (solid line) feeding into the
+ * point forecast (dashed) with its 90% band shaded behind it,
+ * plus a vertical "Today" cutoff line marking where actuals end
+ * and the forecast begins. Shared by the default dashboard
+ * forecast panel and the Forecast Lab. Pure/stateless, so it
+ * lives outside App().
+ * ---------------------------------------------------------
+ */
+
+type SarimaChartProps = {
   history: SalesData[]
   forecast: NonNullable<ForecastResult['forecast']>
   valueCol: ForecastValueCol
 }
 
-const LabForecastChart = ({ history, forecast, valueCol }: LabChartProps) => {
+// Keep only the most recent stretch of history so the forecast segment
+// (usually 12 months) stays visually readable next to years of actuals.
+const SARIMA_CHART_MAX_HISTORY = 24
+
+const SarimaForecastChart = ({ history, forecast, valueCol }: SarimaChartProps) => {
   const width = 600
   const height = 200
   const pad = 10
 
-  const histValues = history.map((h) => (valueCol === 'revenue' ? h.revenue : h.actual_units))
+  const trimmedHistory =
+    history.length > SARIMA_CHART_MAX_HISTORY
+      ? history.slice(history.length - SARIMA_CHART_MAX_HISTORY)
+      : history
+
+  const histValues = trimmedHistory.map((h) => (valueCol === 'revenue' ? h.revenue : h.actual_units))
 
   const allValues = [...histValues, ...forecast.upper_90, ...forecast.lower_90, ...forecast.point]
   const max = allValues.length ? Math.max(...allValues) : 1
@@ -296,17 +316,35 @@ const LabForecastChart = ({ history, forecast, valueCol }: LabChartProps) => {
   const lowerPoints = forecast.lower_90.map((v, i) => `${xFor(fStart + i)},${yFor(v)}`).reverse()
   const bandPoints = [...upperPoints, ...lowerPoints].join(' ')
 
+  // Cutoff sits halfway between the last actual and the first forecast
+  // point — "today", the boundary the model is extrapolating from.
+  const cutoffX = histValues.length > 0 ? xFor(fStart - 0.5) : pad
+  const cutoffLabelAnchor = cutoffX > width - 40 ? 'end' : 'start'
+
   return (
-    <div className="lab-chart">
-      <svg className="lab-chart-svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-        {bandPoints && <polygon points={bandPoints} className="lab-chart-band" />}
-        {histPoints && <polyline points={histPoints} className="lab-chart-history" fill="none" />}
-        {pointPoints && <polyline points={pointPoints} className="lab-chart-forecast" fill="none" />}
+    <div className="sarima-chart">
+      <svg className="sarima-chart-svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        {bandPoints && <polygon points={bandPoints} className="sarima-chart-band" />}
+        {histPoints && <polyline points={histPoints} className="sarima-chart-history" fill="none" />}
+        {pointPoints && <polyline points={pointPoints} className="sarima-chart-forecast" fill="none" />}
+        {histValues.length > 0 && forecast.point.length > 0 && (
+          <>
+            <line x1={cutoffX} x2={cutoffX} y1={0} y2={height} className="sarima-chart-cutoff" />
+            <text
+              x={cutoffLabelAnchor === 'end' ? cutoffX - 4 : cutoffX + 4}
+              y={11}
+              textAnchor={cutoffLabelAnchor}
+              className="sarima-chart-cutoff-label"
+            >
+              Today
+            </text>
+          </>
+        )}
       </svg>
 
-      <div className="lab-chart-labels">
-        <span>{history[0]?.month ?? ''}</span>
-        <span>{history[history.length - 1]?.month ?? forecast.months[0]}</span>
+      <div className="sarima-chart-labels">
+        <span>{trimmedHistory[0]?.month ?? ''}</span>
+        <span>{trimmedHistory[trimmedHistory.length - 1]?.month ?? forecast.months[0]}</span>
         <span>{forecast.months[forecast.months.length - 1] ?? ''}</span>
       </div>
 
@@ -722,6 +760,18 @@ function App() {
     return date.toLocaleString('en-US', { month: 'short' })
   }
 
+  // Same short month label, but flags whenever the calendar year changes
+  // (or on the very first tick) so the revenue chart can show "2024" /
+  // "2025" once per year instead of repeating it on every single label.
+  const monthYearLabel = (month: string, index: number, list: SalesData[]) => {
+    const date = new Date(`${month}-01`)
+    const mon = date.toLocaleString('en-US', { month: 'short' })
+    const year = date.getFullYear()
+    const prevYear =
+      index > 0 ? new Date(`${list[index - 1].month}-01`).getFullYear() : null
+    return { mon, year, isYearStart: index === 0 || year !== prevYear }
+  }
+
   /*
    * ---------------------------------------------------------
    * VIEW VISIBILITY — which blocks render for which sidebar view
@@ -850,7 +900,7 @@ function App() {
               </div>
 
               <div className="kpi-value">
-                ¥{(periodTotalRevenue / 1_000_000).toFixed(2)}M
+                ฿{(periodTotalRevenue / 1_000_000).toFixed(2)}M
               </div>
 
               <div className={`kpi-change ${changeClass(revenueChange)}`}>
@@ -1005,10 +1055,16 @@ function App() {
 
                 {forecast.status === 'ok' && forecast.forecast && (
                   <>
+                    <SarimaForecastChart
+                      history={filteredSales}
+                      forecast={forecast.forecast}
+                      valueCol="revenue"
+                    />
+
                     <div className="forecast-meta">
                       <div>
                         <strong>
-                          ¥{(forecast.forecast.annual_total / 1_000_000).toFixed(1)}M
+                          ฿{(forecast.forecast.annual_total / 1_000_000).toFixed(1)}M
                         </strong>
                         <span>Forecast annual total</span>
                       </div>
@@ -1083,7 +1139,7 @@ function App() {
               </div>
 
               <div className="revenue-total">
-                <strong>¥{(periodTotalRevenue / 1_000_000).toFixed(2)}M</strong>
+                <strong>฿{(periodTotalRevenue / 1_000_000).toFixed(2)}M</strong>
                 <span className={revenueChange >= 0 ? 'positive' : 'negative'}>
                   {formatChange(revenueChange)}
                 </span>
@@ -1111,7 +1167,7 @@ function App() {
                     {revenuePoints.map((point, index) => (
                       <circle key={filteredSales[index].month} cx={point.x} cy={point.y} r="3.5" fill="currentColor">
                         <title>
-                          {filteredSales[index].month}: ¥{filteredSales[index].revenue.toLocaleString()}
+                          {filteredSales[index].month}: ฿{filteredSales[index].revenue.toLocaleString()}
                         </title>
                       </circle>
                     ))}
@@ -1122,9 +1178,15 @@ function App() {
               </div>
 
               <div className="month-labels">
-                {filteredSales.map((item) => (
-                  <span key={item.month}>{monthLabel(item.month)}</span>
-                ))}
+                {filteredSales.map((item, index) => {
+                  const { mon, year, isYearStart } = monthYearLabel(item.month, index, filteredSales)
+                  return (
+                    <span className="month-label-cell" key={item.month}>
+                      <span className="month-label-month">{mon}</span>
+                      {isYearStart && <span className="month-label-year">{year}</span>}
+                    </span>
+                  )
+                })}
               </div>
             </div>
           </section>
@@ -1172,33 +1234,39 @@ function App() {
                   <span>Forecast variance</span>
                 </div>
 
-                {filteredProducts.length > 0 ? (
-                  filteredProducts.map((item) => {
-                    const variance = productVariance(item)
-                    const varianceClass =
-                      variance > 0 ? 'positive' : variance < 0 ? 'negative' : 'neutral'
+                <div className="product-table-scroll">
+                  {filteredProducts.length > 0 ? (
+                    filteredProducts.map((item) => {
+                      const variance = productVariance(item)
+                      const varianceClass =
+                        variance > 0 ? 'positive' : variance < 0 ? 'negative' : 'neutral'
 
-                    return (
-                      <div className="product-row" key={item.product}>
-                        <div className="product-name">
-                          <strong>{item.product}</strong>
-                          <span>{item.actual_units.toLocaleString()} actual units</span>
+                      return (
+                        <div className="product-row" key={item.product}>
+                          <div className="product-name">
+                            <strong>{item.product}</strong>
+                            <span>{item.actual_units.toLocaleString()} actual units</span>
+                          </div>
+
+                          <strong>฿{(item.revenue / 1_000_000).toFixed(2)}M</strong>
+
+                          <span className={varianceClass}>
+                            {variance > 0 ? '+' : ''}
+                            {variance.toFixed(1)}%
+                          </span>
                         </div>
+                      )
+                    })
+                  ) : products.length === 0 ? (
+                    <div className="chart-loading">Loading product data...</div>
+                  ) : (
+                    <div className="empty-state">No products match "{productQuery}".</div>
+                  )}
+                </div>
 
-                        <strong>¥{(item.revenue / 1_000_000).toFixed(2)}M</strong>
-
-                        <span className={varianceClass}>
-                          {variance > 0 ? '+' : ''}
-                          {variance.toFixed(1)}%
-                        </span>
-                      </div>
-                    )
-                  })
-                ) : products.length === 0 ? (
-                  <div className="chart-loading">Loading product data...</div>
-                ) : (
-                  <div className="empty-state">No products match "{productQuery}".</div>
-                )}
+                <div className="product-table-count">
+                  Showing {filteredProducts.length} of {products.length} products
+                </div>
               </div>
             </div>
           </section>
@@ -1236,7 +1304,7 @@ function App() {
                           <span>{item.actual_units.toLocaleString()} actual units</span>
                         </div>
 
-                        <strong>¥{(item.revenue / 1_000_000).toFixed(2)}M</strong>
+                        <strong>฿{(item.revenue / 1_000_000).toFixed(2)}M</strong>
 
                         <span className={varianceClass}>
                           {variance > 0 ? '+' : ''}
@@ -1439,7 +1507,7 @@ function App() {
                     </div>
                   </div>
 
-                  <LabForecastChart
+                  <SarimaForecastChart
                     history={filteredSales}
                     forecast={labResult.forecast}
                     valueCol={labValueCol}
@@ -1448,9 +1516,11 @@ function App() {
                   <div className="forecast-meta">
                     <div>
                       <strong>
+                        {labValueCol === 'revenue' ? '฿' : ''}
                         {labResult.forecast.annual_total.toLocaleString(undefined, {
                           maximumFractionDigits: 0,
                         })}
+                        {labValueCol === 'actual_units' ? ' units' : ''}
                       </strong>
                       <span>Forecast total ({labResult.forecast.horizon}mo)</span>
                     </div>
