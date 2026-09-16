@@ -10,6 +10,8 @@ from app.services.analytics import (
     get_product_summary,
     get_ai_insights,
     get_sarima_forecast_for,
+    get_xgboost_forecast_for,
+    get_randomforest_forecast_for,
     get_forecast_options,
 )
 
@@ -133,3 +135,179 @@ def forecast_status(job_id: str = "default"):
 def forecast_options():
     """Distinct products/customers the Forecast Lab can slice a series by."""
     return get_forecast_options()
+
+
+# --- XGBoost forecast: background trigger + poll, never synchronous ---
+# See xgboost_engine.py's own docstring: a run takes several seconds and must not
+# block a request handler. The frontend calls POST /xgboost/forecast/run once
+# per job, then polls GET /xgboost/forecast?job_id=... until status is no
+# longer "running".
+#
+# Jobs are keyed by job_id so the dashboard's default whole-company
+# forecast (job_id="default" — what Overview / Sales forecast / Forecast
+# accuracy all read) and the Forecast Lab's exploratory per-product /
+# per-customer runs (job_id="lab") don't overwrite each other. Without
+# this, running a one-off product forecast from the Lab would silently
+# replace the number every other view is showing.
+#
+# _xgboost_forecast_lock protects the dict itself (fast, in-memory bookkeeping)
+# — it is NOT held during the actual run, which happens in its
+# own daemon thread.
+
+class XGBoostForecastRunRequest(BaseModel):
+    job_id: str = "default"
+    dimension: str = "total"          # "total" | "product" | "customer"
+    dimension_value: Optional[str] = None
+    value_col: str = "revenue"        # "revenue" | "actual_units"
+    horizon: int = 12
+    fast: bool = True
+
+
+_xgboost_forecast_jobs: dict = {}
+_xgboost_forecast_lock = threading.Lock()
+
+
+def _run_xgboost_forecast_background(job_id: str, params: "XGBoostForecastRunRequest"):
+    try:
+        result = get_xgboost_forecast_for(
+            dimension=params.dimension,
+            dimension_value=params.dimension_value,
+            value_col=params.value_col,
+            horizon=params.horizon,
+            fast=params.fast,
+        )
+    except Exception as exc:
+        result = {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
+    with _xgboost_forecast_lock:
+        job = _xgboost_forecast_jobs.setdefault(job_id, {})
+        job["status"] = "done"
+        job["result"] = result
+        job["params"] = params.dict()
+
+
+@router.post("/xgboost/forecast/run")
+def start_xgboost_forecast(params: XGBoostForecastRunRequest = XGBoostForecastRunRequest()):
+    with _xgboost_forecast_lock:
+        job = _xgboost_forecast_jobs.setdefault(params.job_id, {"status": "idle", "result": None})
+        if job.get("status") == "running":
+            return {"status": "already_running", "job_id": params.job_id}
+        job["status"] = "running"
+        job["result"] = None
+        job["params"] = params.dict()
+
+    thread = threading.Thread(
+        target=_run_xgboost_forecast_background,
+        args=(params.job_id, params),
+        daemon=True,
+    )
+    thread.start()
+    return {"status": "started", "job_id": params.job_id, "params": params.dict()}
+
+
+@router.get("/xgboost/forecast")
+def xgboost_forecast_status(job_id: str = "default"):
+    with _xgboost_forecast_lock:
+        job = _xgboost_forecast_jobs.get(job_id)
+
+    if job is None or job.get("status") == "idle":
+        return {
+            "status": "idle",
+            "job_id": job_id,
+            "message": "No forecast run yet. POST /api/xgboost/forecast/run to start one.",
+        }
+    if job["status"] == "running":
+        return {"status": "running", "job_id": job_id}
+
+    result = dict(job["result"] or {})
+    result["job_id"] = job_id
+    result["params"] = job.get("params")
+    return result
+
+
+# --- Random Forest forecast: background trigger + poll, never synchronous ---
+# See randomforest_engine.py's own docstring: a run takes several seconds and must not
+# block a request handler. The frontend calls POST /randomforest/forecast/run once
+# per job, then polls GET /randomforest/forecast?job_id=... until status is no
+# longer "running".
+#
+# Jobs are keyed by job_id so the dashboard's default whole-company
+# forecast (job_id="default" — what Overview / Sales forecast / Forecast
+# accuracy all read) and the Forecast Lab's exploratory per-product /
+# per-customer runs (job_id="lab") don't overwrite each other. Without
+# this, running a one-off product forecast from the Lab would silently
+# replace the number every other view is showing.
+#
+# _randomforest_forecast_lock protects the dict itself (fast, in-memory bookkeeping)
+# — it is NOT held during the actual run, which happens in its
+# own daemon thread.
+
+class RandomForestForecastRunRequest(BaseModel):
+    job_id: str = "default"
+    dimension: str = "total"          # "total" | "product" | "customer"
+    dimension_value: Optional[str] = None
+    value_col: str = "revenue"        # "revenue" | "actual_units"
+    horizon: int = 12
+    fast: bool = True
+
+
+_randomforest_forecast_jobs: dict = {}
+_randomforest_forecast_lock = threading.Lock()
+
+
+def _run_randomforest_forecast_background(job_id: str, params: "RandomForestForecastRunRequest"):
+    try:
+        result = get_randomforest_forecast_for(
+            dimension=params.dimension,
+            dimension_value=params.dimension_value,
+            value_col=params.value_col,
+            horizon=params.horizon,
+            fast=params.fast,
+        )
+    except Exception as exc:
+        result = {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
+    with _randomforest_forecast_lock:
+        job = _randomforest_forecast_jobs.setdefault(job_id, {})
+        job["status"] = "done"
+        job["result"] = result
+        job["params"] = params.dict()
+
+
+@router.post("/randomforest/forecast/run")
+def start_randomforest_forecast(params: RandomForestForecastRunRequest = RandomForestForecastRunRequest()):
+    with _randomforest_forecast_lock:
+        job = _randomforest_forecast_jobs.setdefault(params.job_id, {"status": "idle", "result": None})
+        if job.get("status") == "running":
+            return {"status": "already_running", "job_id": params.job_id}
+        job["status"] = "running"
+        job["result"] = None
+        job["params"] = params.dict()
+
+    thread = threading.Thread(
+        target=_run_randomforest_forecast_background,
+        args=(params.job_id, params),
+        daemon=True,
+    )
+    thread.start()
+    return {"status": "started", "job_id": params.job_id, "params": params.dict()}
+
+
+@router.get("/randomforest/forecast")
+def randomforest_forecast_status(job_id: str = "default"):
+    with _randomforest_forecast_lock:
+        job = _randomforest_forecast_jobs.get(job_id)
+
+    if job is None or job.get("status") == "idle":
+        return {
+            "status": "idle",
+            "job_id": job_id,
+            "message": "No forecast run yet. POST /api/randomforest/forecast/run to start one.",
+        }
+    if job["status"] == "running":
+        return {"status": "running", "job_id": job_id}
+
+    result = dict(job["result"] or {})
+    result["job_id"] = job_id
+    result["params"] = job.get("params")
+    return result 

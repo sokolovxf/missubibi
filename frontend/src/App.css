@@ -823,3 +823,127 @@ h1, h2, h3, .kpi-value, .forecast-meta strong, .revenue-total strong,
   .main { padding: 16px; }
   .table-controls { flex-direction: column; }
 }
+
+/* ---------- MODEL FORECAST COMPARISON ---------- */
+
+.model-forecast {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 16px;
+}
+
+.model-forecast h3 {
+  margin: 0 0 12px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-forecast.sarima-forecast h3 {
+  color: var(--accent);
+}
+
+.model-forecast.randomforest-forecast h3 {
+  color: #10B981; /* Emerald green for RandomForest */
+}
+
+.forecast-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 16px;
+  font-size: 13px;
+}
+
+.forecast-meta > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.forecast-meta strong {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+
+.forecast-meta span {
+  color: var(--ink-muted);
+  font-size: 11.5px;
+}
+
+/* RandomForest specific metric colors */
+.randomforest-forecast .forecast-meta strong {
+  color: #10B981;
+}
+
+/* Lab results styling */
+.lab-diag-table {
+  margin-top: 12px;
+}
+
+.lab-diag-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.lab-diag-header {
+  color: var(--ink-muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--ink);
+  padding-bottom: 8px;
+}
+
+.lab-diag-row .positive { color: var(--positive); }
+.lab-diag-row .negative { color: var(--negative); }
+
+@media (max-width: 640px) {
+  .lab-diag-row { grid-template-columns: 1fr 1fr; row-gap: 4px; }
+}
+
+/* Model comparison specific styles */
+.comparison-note {
+  text-align: center;
+  padding: 20px;
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.forecast-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+.forecast-status-badge.running {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.forecast-status-badge.ok {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--positive);
+}
+
+.forecast-status-badge.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--negative);
+}
+
+.forecast-status-badge.insufficient_history {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+}

@@ -344,8 +344,8 @@ const SarimaForecastChart = ({ history, forecast, valueCol }: SarimaChartProps) 
 
       <div className="sarima-chart-labels">
         <span>{trimmedHistory[0]?.month ?? ''}</span>
-        <span>{trimmedHistory[trimmedHistory.length - 1]?.month ?? forecast.months[0]}</span>
-        <span>{forecast.months[forecast.months.length - 1] ?? ''}</span>
+        <span>{trimmedHistory[trimmedHistory.length - 1]?.month ?? (forecast.months.length > 0 ? forecast.months[0] : '')}</span>
+        <span>{forecast.months.length > 0 ? forecast.months[forecast.months.length - 1] : ''}</span>
       </div>
 
       <div className="chart-legend">
@@ -736,6 +736,7 @@ function App() {
   const [products, setProducts] = useState<ProductData[]>([])
   const [insights, setInsights] = useState<Insight[]>([])
   const [forecast, setForecast] = useState<ForecastResult>({ status: 'idle' })
+  const [randomforestForecast, setRandomforestForecast] = useState<ForecastResult>({ status: 'idle' })
 
   const [activeView, setActiveView] = useState<ViewId>('overview')
 
@@ -754,8 +755,11 @@ function App() {
   const [labValueCol, setLabValueCol] = useState<ForecastValueCol>('revenue')
   const [labHorizon, setLabHorizon] = useState(12)
   const [labFast, setLabFast] = useState(true)
+  const [labModel, setLabModel] = useState<'sarima' | 'randomforest'>('sarima')
   const [labResult, setLabResult] = useState<ForecastResult>({ status: 'idle' })
+  const [labRandomforestResult, setLabRandomforestResult] = useState<ForecastResult>({ status: 'idle' })
   const labPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const labRandomforestPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     // Get dashboard KPI data
@@ -859,6 +863,40 @@ function App() {
     }
   }, [])
 
+  // Trigger + poll the RandomForest forecast run
+  useEffect(() => {
+    let cancelled = false
+    let pollId: ReturnType<typeof setInterval>
+
+    const poll = () => {
+      fetch('http://127.0.0.1:8100/api/randomforest/forecast')
+        .then((r) => r.json())
+        .then((data: ForecastResult) => {
+          if (cancelled) return
+          setRandomforestForecast(data)
+          if (data.status !== 'running') {
+            clearInterval(pollId)
+          }
+        })
+        .catch(() => clearInterval(pollId))
+    }
+
+    fetch('http://127.0.0.1:8100/api/randomforest/forecast/run', { method: 'POST' })
+      .then(() => {
+        setRandomforestForecast({ status: 'running' })
+        pollId = setInterval(poll, 5000)
+        poll()
+      })
+      .catch(() =>
+        setRandomforestForecast({ status: 'error', message: 'Could not start RandomForest forecast.' }),
+      )
+
+    return () => {
+      cancelled = true
+      clearInterval(pollId)
+    }
+  }, [])
+
   // Load the product/customer picker options once the Lab is opened.
   useEffect(() => {
     if (activeView !== 'lab') return
@@ -874,53 +912,100 @@ function App() {
   useEffect(() => {
     return () => {
       if (labPollRef.current) clearInterval(labPollRef.current)
+      if (labRandomforestPollRef.current) clearInterval(labRandomforestPollRef.current)
     }
   }, [])
 
   const runLabForecast = () => {
     if (labDimension !== 'total' && !labDimensionValue) return
 
-    if (labPollRef.current) {
-      clearInterval(labPollRef.current)
-      labPollRef.current = null
-    }
+    if (labModel === 'sarima') {
+      if (labPollRef.current) {
+        clearInterval(labPollRef.current)
+        labPollRef.current = null
+      }
 
-    const body = {
-      job_id: 'lab',
-      dimension: labDimension,
-      dimension_value: labDimension === 'total' ? null : labDimensionValue,
-      value_col: labValueCol,
-      horizon: labHorizon,
-      fast: labFast,
-    }
+      const body = {
+        job_id: 'lab',
+        dimension: labDimension,
+        dimension_value: labDimension === 'total' ? null : labDimensionValue,
+        value_col: labValueCol,
+        horizon: labHorizon,
+        fast: labFast,
+      }
 
-    fetch('http://127.0.0.1:8100/api/forecast/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-      .then(() => {
-        setLabResult({ status: 'running' })
-
-        const poll = () => {
-          fetch('http://127.0.0.1:8100/api/forecast?job_id=lab')
-            .then((r) => r.json())
-            .then((data: ForecastResult) => {
-              setLabResult(data)
-              if (data.status !== 'running' && labPollRef.current) {
-                clearInterval(labPollRef.current)
-                labPollRef.current = null
-              }
-            })
-            .catch(() => {
-              if (labPollRef.current) clearInterval(labPollRef.current)
-            })
-        }
-
-        labPollRef.current = setInterval(poll, 5000)
-        poll()
+      fetch('http://127.0.0.1:8100/api/forecast/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       })
-      .catch(() => setLabResult({ status: 'error', message: 'Could not start forecast.' }))
+        .then(() => {
+          setLabResult({ status: 'running' })
+          setLabRandomforestResult({ status: 'idle' }) // Clear RandomForest result
+
+          const poll = () => {
+            fetch('http://127.0.0.1:8100/api/forecast?job_id=lab')
+              .then((r) => r.json())
+              .then((data: ForecastResult) => {
+                setLabResult(data)
+                if (data.status !== 'running' && labPollRef.current) {
+                  clearInterval(labPollRef.current)
+                  labPollRef.current = null
+                }
+              })
+              .catch(() => {
+                if (labPollRef.current) clearInterval(labPollRef.current)
+              })
+          }
+
+          labPollRef.current = setInterval(poll, 5000)
+          poll()
+        })
+        .catch(() => setLabResult({ status: 'error', message: 'Could not start SARIMA forecast.' }))
+    } else if (labModel === 'randomforest') {
+      if (labRandomforestPollRef.current) {
+        clearInterval(labRandomforestPollRef.current)
+        labRandomforestPollRef.current = null
+      }
+
+      const body = {
+        job_id: 'lab',
+        dimension: labDimension,
+        dimension_value: labDimension === 'total' ? null : labDimensionValue,
+        value_col: labValueCol,
+        horizon: labHorizon,
+        fast: labFast,
+      }
+
+      fetch('http://127.0.0.1:8100/api/randomforest/forecast/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+        .then(() => {
+          setLabRandomforestResult({ status: 'running' })
+          setLabResult({ status: 'idle' }) // Clear SARIMA result
+
+          const poll = () => {
+            fetch('http://127.0.0.1:8100/api/randomforest/forecast?job_id=lab')
+              .then((r) => r.json())
+              .then((data: ForecastResult) => {
+                setLabRandomforestResult(data)
+                if (data.status !== 'running' && labRandomforestPollRef.current) {
+                  clearInterval(labRandomforestPollRef.current)
+                  labRandomforestPollRef.current = null
+                }
+              })
+              .catch(() => {
+                if (labRandomforestPollRef.current) clearInterval(labRandomforestPollRef.current)
+              })
+          }
+
+          labRandomforestPollRef.current = setInterval(poll, 5000)
+          poll()
+        })
+        .catch(() => setLabRandomforestResult({ status: 'error', message: 'Could not start RandomForest forecast.' }))
+    }
   }
 
   /*
@@ -1337,13 +1422,14 @@ function App() {
               <div className="panel forecast-panel">
                 <div className="panel-header">
                   <div>
-                    <h2>FY2025 forecast (SARIMA)</h2>
-                    <p>Next 12 months, revenue</p>
+                    <h2>Model Forecasts</h2>
+                    <p>Comparison of SARIMA and RandomForest forecasts</p>
                   </div>
                 </div>
 
+                {/* SARIMA Forecast */}
                 {forecast.status === 'running' && (
-                  <div className="chart-loading">Running forecast — this takes 40–90s…</div>
+                  <div className="chart-loading">Running SARIMA forecast — this takes 40–90s…</div>
                 )}
 
                 {forecast.status === 'insufficient_history' && (
@@ -1355,13 +1441,13 @@ function App() {
                 )}
 
                 {forecast.status === 'ok' && forecast.forecast && (
-                  <>
+                  <div className="model-forecast sarima-forecast">
+                    <h3>SARIMA Forecast</h3>
                     <SarimaForecastChart
                       history={filteredSales}
                       forecast={forecast.forecast}
                       valueCol="revenue"
                     />
-
                     <div className="forecast-meta">
                       <div>
                         <strong>
@@ -1389,38 +1475,74 @@ function App() {
                         <span>12-month accuracy</span>
                       </div>
                     </div>
+                  </div>
+                )}
 
-                    {forecast.diagnostics?.wf12.beats_naive === false && (
-                      <div className="forecast-caveat">
-                        At the 12-month horizon, this model has not yet shown it beats a
-                        naive seasonal baseline — treat the annual total as directional,
-                        not precise.
-                      </div>
-                    )}
+                {/* RandomForest Forecast */}
+                {randomforestForecast.status === 'running' && (
+                  <div className="chart-loading">Running RandomForest forecast…</div>
+                )}
 
-                    {forecast.data_anomalies && forecast.data_anomalies.length > 0 && (
-                      <div className="forecast-caveat">
-                        {forecast.data_anomalies[0].message}
-                      </div>
-                    )}
+                {randomforestForecast.status === 'insufficient_history' && (
+                  <div className="chart-loading">{randomforestForecast.message}</div>
+                )}
 
-                    {activeView === 'accuracy' && (
-                      <div className="accuracy-detail">
-                        <div className="accuracy-row">
-                          <span>WF1 (1-month-ahead validation)</span>
-                          <strong className="positive">
-                            {forecast.diagnostics?.wf1.SARIMA?.accuracy_pct}% — beats naive baseline
-                          </strong>
-                        </div>
-                        <div className="accuracy-row">
-                          <span>WF12 (12-month-ahead validation)</span>
-                          <strong className="negative">
-                            {forecast.diagnostics?.wf12.SARIMA?.accuracy_pct}% — does not beat naive baseline
-                          </strong>
-                        </div>
+                {randomforestForecast.status === 'error' && (
+                  <div className="chart-loading">{randomforestForecast.message}</div>
+                )}
+
+                {randomforestForecast.status === 'ok' && randomforestForecast.forecast && (
+                  <div className="model-forecast randomforest-forecast">
+                    <h3>RandomForest Forecast</h3>
+                    <SarimaForecastChart
+                      history={filteredSales}
+                      forecast={randomforestForecast.forecast}
+                      valueCol="revenue"
+                    />
+                    <div className="forecast-meta">
+                      <div>
+                        <strong>
+                          ฿{(randomforestForecast.forecast.annual_total / 1_000_000).toFixed(1)}M
+                        </strong>
+                        <span>Forecast annual total</span>
                       </div>
-                    )}
-                  </>
+
+                      <div>
+                        <strong>
+                          {randomforestForecast.forecast.annual_yoy_pct !== null
+                            ? `${randomforestForecast.forecast.annual_yoy_pct > 0 ? '+' : ''}${randomforestForecast.forecast.annual_yoy_pct}%`
+                            : '—'}
+                        </strong>
+                        <span>YoY vs FY2024</span>
+                      </div>
+
+                      <div>
+                        <strong>{randomforestForecast.diagnostics?.holdout_mae !== null ?
+                          Math.round(randomforestForecast.diagnostics.holdout_mae) : '—'}</strong>
+                        <span>Holdout MAE</span>
+                      </div>
+
+                      <div>
+                        <strong>{randomforestForecast.diagnostics?.holdout_rmse !== null ?
+                          Math.round(randomforestForecast.diagnostics.holdout_rmse) : '—'}</strong>
+                        <span>Holdout RMSE</span>
+                      </div>
+
+                      <div>
+                        <strong>{randomforestForecast.diagnostics?.holdout_mape !== null ?
+                          randomforestForecast.diagnostics.holdout_mape.toFixed(1) + '%' : '—'}</strong>
+                        <span>Holdout MAPE</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Show message if no forecasts are available */}
+                {!((forecast.status === 'ok' && forecast.forecast) ||
+                   (randomforestForecast.status === 'ok' && randomforestForecast.forecast)) &&
+                ((forecast.status === 'running' || randomforestForecast.status === 'running') ||
+                 (forecast.status === 'idle' && randomforestForecast.status === 'idle')) && (
+                  <div className="chart-loading">No forecast data available. Start a forecast to see predictions.</div>
                 )}
               </div>
             )}
@@ -1712,6 +1834,17 @@ function App() {
 
               <div className="lab-form">
                 <label>
+                  Model
+                  <select
+                    value={labModel}
+                    onChange={(e) => setLabModel(e.target.value as 'sarima' | 'randomforest')}
+                  >
+                    <option value="sarima">SARIMA</option>
+                    <option value="randomforest">Random Forest</option>
+                  </select>
+                </label>
+
+                <label>
                   Series
                   <select
                     value={labDimension}
@@ -1779,177 +1912,285 @@ function App() {
                 <button
                   className="lab-run-button"
                   onClick={runLabForecast}
-                  disabled={labResult.status === 'running' || (labDimension !== 'total' && !labDimensionValue)}
+                  disabled={
+                    (labModel === 'sarima' && labResult.status === 'running') ||
+                    (labModel === 'randomforest' && labRandomforestResult.status === 'running') ||
+                    (labDimension !== 'total' && !labDimensionValue)
+                  }
                 >
-                  {labResult.status === 'running' ? 'Running… (40–90s)' : 'Run forecast'}
+                  {(labModel === 'sarima' ? labResult.status === 'running' : labRandomforestResult.status === 'running')
+                    ? 'Running… (40–90s)'
+                    : 'Run forecast'}
                 </button>
               </div>
             </div>
 
-            {labResult.status === 'idle' && (
-              <div className="panel">
-                <div className="chart-loading">Configure a run above and hit "Run forecast".</div>
-              </div>
-            )}
-
-            {labResult.status === 'running' && (
-              <div className="panel">
-                <div className="chart-loading">Fitting SARIMA candidates — this takes 40–90 seconds…</div>
-              </div>
-            )}
-
-            {labResult.status === 'insufficient_history' && (
-              <div className="panel">
-                <div className="chart-loading">{labResult.detail ?? labResult.message}</div>
-              </div>
-            )}
-
-            {(labResult.status === 'error' || labResult.status === 'already_running') && (
-              <div className="panel">
-                <div className="chart-loading">
-                  {labResult.message ?? 'Another run is already in progress — wait for it to finish.'}
-                </div>
-              </div>
-            )}
-
-            {labResult.status === 'ok' && labResult.forecast && (
+            {/* SARIMA Lab Results */}
+            {(labModel === 'sarima') && (
               <>
-                <div className="panel">
-                  <div className="panel-header">
-                    <div>
-                      <h2>{labResult.forecast.series}</h2>
-                      <p>
-                        {labResult.forecast.spec} · {labResult.forecast.horizon}-month forecast from{' '}
-                        {labResult.forecast.months[0]}
-                      </p>
-                    </div>
-                  </div>
-
-                  <SarimaForecastChart
-                    history={filteredSales}
-                    forecast={labResult.forecast}
-                    valueCol={labValueCol}
-                  />
-
-                  <div className="forecast-meta">
-                    <div>
-                      <strong>
-                        {labValueCol === 'revenue' ? '฿' : ''}
-                        {labResult.forecast.annual_total.toLocaleString(undefined, {
-                          maximumFractionDigits: 0,
-                        })}
-                        {labValueCol === 'actual_units' ? ' units' : ''}
-                      </strong>
-                      <span>Forecast total ({labResult.forecast.horizon}mo)</span>
-                    </div>
-
-                    <div>
-                      <strong>
-                        {labResult.forecast.annual_yoy_pct !== null
-                          ? `${labResult.forecast.annual_yoy_pct > 0 ? '+' : ''}${labResult.forecast.annual_yoy_pct}%`
-                          : '—'}
-                      </strong>
-                      <span>YoY vs prior fiscal year</span>
-                    </div>
-
-                    <div>
-                      <strong className={labResult.forecast.plausibility_ok ? 'positive' : 'negative'}>
-                        {labResult.forecast.plausibility_ok ? 'Passed' : 'Flagged'}
-                      </strong>
-                      <span>Plausibility screen</span>
-                    </div>
-                  </div>
-
-                  {!labResult.forecast.plausibility_ok && labResult.forecast.plausibility_detail && (
-                    <div className="forecast-caveat">{labResult.forecast.plausibility_detail}</div>
-                  )}
-                </div>
-
-                <div className="panel">
-                  <div className="panel-header">
-                    <div>
-                      <h2>Validation</h2>
-                      <p>SARIMA vs seasonal-naive baseline, walk-forward</p>
-                    </div>
-                  </div>
-
-                  <div className="lab-diag-table">
-                    <div className="lab-diag-row lab-diag-header">
-                      <span>Scheme</span>
-                      <span>SARIMA</span>
-                      <span>Naive</span>
-                      <span>Beats naive?</span>
-                      <span>Significant?</span>
-                    </div>
-
-                    {(['wf1', 'wf12'] as const).map((scheme) => {
-                      const d = labResult.diagnostics?.[scheme]
-                      if (!d) return null
-
-                      return (
-                        <div className="lab-diag-row" key={scheme}>
-                          <span>{scheme === 'wf1' ? 'WF1 (1-month)' : 'WF12 (12-month)'}</span>
-                          <span>{d.SARIMA ? `${d.SARIMA.accuracy_pct}%` : '—'}</span>
-                          <span>{d.SeasonalNaive ? `${d.SeasonalNaive.accuracy_pct}%` : '—'}</span>
-                          <span className={d.beats_naive ? 'positive' : 'negative'}>
-                            {d.beats_naive ? 'Yes' : 'No'}
-                          </span>
-                          <span>
-                            {d.vs_baseline?.distinguishable === null ||
-                            d.vs_baseline?.distinguishable === undefined
-                              ? '—'
-                              : d.vs_baseline.distinguishable
-                              ? 'Yes'
-                              : 'No'}
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </div>
-
-                  <div className="accuracy-row">
-                    <span>Ljung-Box residual check</span>
-                    <strong className={labResult.diagnostics?.residuals_clean ? 'positive' : 'negative'}>
-                      {labResult.diagnostics?.ljung_box_p !== null &&
-                      labResult.diagnostics?.ljung_box_p !== undefined
-                        ? `p=${labResult.diagnostics.ljung_box_p} — ${
-                            labResult.diagnostics.residuals_clean ? 'clean' : 'autocorrelated'
-                          }`
-                        : '—'}
-                    </strong>
-                  </div>
-                </div>
-
-                {((labResult.data_anomalies && labResult.data_anomalies.length > 0) ||
-                  (labResult.warnings && labResult.warnings.length > 0)) && (
+                {labResult.status === 'idle' && (
                   <div className="panel">
-                    <div className="panel-header">
-                      <div>
-                        <h2>Notes</h2>
-                        <p>Data anomalies and engine warnings from this run</p>
+                    <div className="chart-loading">Configure a run above and hit "Run forecast".</div>
+                  </div>
+                )}
+
+                {labResult.status === 'running' && (
+                  <div className="panel">
+                    <div className="chart-loading">Fitting SARIMA candidates — this takes 40–90 seconds…</div>
+                  </div>
+                )}
+
+                {labResult.status === 'insufficient_history' && (
+                  <div className="panel">
+                    <div className="chart-loading">{labResult.detail ?? labResult.message}</div>
+                  </div>
+                )}
+
+                {(labResult.status === 'error' || labResult.status === 'already_running') && (
+                  <div className="panel">
+                    <div className="chart-loading">
+                      {labResult.message ?? 'Another run is already in progress — wait for it to finish.'}
+                    </div>
+                  </div>
+                )}
+
+                {labResult.status === 'ok' && labResult.forecast && (
+                  <>
+                    <div className="panel">
+                      <div className="panel-header">
+                        <div>
+                          <h2>{labResult.forecast.series}</h2>
+                          <p>
+                            {labResult.forecast.spec} · {labResult.forecast.horizon}-month forecast from{' '}
+                            {labResult.forecast.months.length > 0 ? labResult.forecast.months[0] : '—'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <SarimaForecastChart
+                        history={filteredSales}
+                        forecast={labResult.forecast}
+                        valueCol={labValueCol}
+                      />
+
+                      <div className="forecast-meta">
+                        <div>
+                          <strong>
+                            {labValueCol === 'revenue' ? '฿' : ''}
+                            {labResult.forecast.annual_total.toLocaleString(undefined, {
+                              maximumFractionDigits: 0,
+                            })}
+                            {labValueCol === 'actual_units' ? ' units' : ''}
+                          </strong>
+                          <span>Forecast total ({labResult.forecast.horizon}mo)</span>
+                        </div>
+
+                        <div>
+                          <strong>
+                            {labResult.forecast.annual_yoy_pct !== null
+                              ? `${labResult.forecast.annual_yoy_pct > 0 ? '+' : ''}${labResult.forecast.annual_yoy_pct}%`
+                              : '—'}
+                          </strong>
+                          <span>YoY vs prior fiscal year</span>
+                        </div>
+
+                        <div>
+                          <strong className={labResult.forecast.plausibility_ok ? 'positive' : 'negative'}>
+                            {labResult.forecast.plausibility_ok ? 'Passed' : 'Flagged'}
+                          </strong>
+                          <span>Plausibility screen</span>
+                        </div>
+                      </div>
+
+                      {!labResult.forecast.plausibility_ok && labResult.forecast.plausibility_detail && (
+                        <div className="forecast-caveat">{labResult.forecast.plausibility_detail}</div>
+                      )}
+                    </div>
+
+                    <div className="panel">
+                      <div className="panel-header">
+                        <div>
+                          <h2>Validation</h2>
+                          <p>SARIMA vs seasonal-naive baseline, walk-forward</p>
+                        </div>
+                      </div>
+
+                      <div className="lab-diag-table">
+                        <div className="lab-diag-row lab-diag-header">
+                          <span>Scheme</span>
+                          <span>SARIMA</span>
+                          <span>Naive</span>
+                          <span>Beats naive?</span>
+                          <span>Significant?</span>
+                        </div>
+
+                        {(['wf1', 'wf12'] as const).map((scheme) => {
+                          const d = labResult.diagnostics?.[scheme]
+                          if (!d) return null
+
+                          return (
+                            <div className="lab-diag-row" key={scheme}>
+                              <span>{scheme === 'wf1' ? 'WF1 (1-month)' : 'WF12 (12-month)'}</span>
+                              <span>{d.SARIMA ? `${d.SARIMA.accuracy_pct}%` : '—'}</span>
+                              <span>{d.SeasonalNaive ? `${d.SeasonalNaive.accuracy_pct}%` : '—'}</span>
+                              <span className={d.beats_naive ? 'positive' : 'negative'}>
+                                {d.beats_naive ? 'Yes' : 'No'}
+                              </span>
+                              <span>
+                                {d.vs_baseline?.distinguishable === null ||
+                                d.vs_baseline?.distinguishable === undefined
+                                  ? '—'
+                                  : d.vs_baseline.distinguishable
+                                  ? 'Yes'
+                                  : 'No'}
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      <div className="accuracy-row">
+                        <span>Ljung-Box residual check</span>
+                        <strong className={labResult.diagnostics?.residuals_clean ? 'positive' : 'negative'}>
+                          {labResult.diagnostics?.ljung_box_p !== null &&
+                          labResult.diagnostics?.ljung_box_p !== undefined
+                            ? `p=${labResult.diagnostics.ljung_box_p} — ${
+                                labResult.diagnostics.residuals_clean ? 'clean' : 'autocorrelated'
+                              }`
+                            : '—'}
+                        </strong>
                       </div>
                     </div>
 
-                    {labResult.data_anomalies?.map((a, i) => (
-                      <div className="insight" key={`anom-${i}`}>
-                        <div className="insight-icon warning-icon">!</div>
-                        <div>
-                          <strong>Data anomaly</strong>
-                          <p>{a.message}</p>
+                                        {((labResult.data_anomalies && labResult.data_anomalies.length > 0) ||
+                      (labResult.warnings && labResult.warnings.length > 0)) && (
+                      <div className="panel">
+                        <div className="panel-header">
+                          <div>
+                            <h2>Notes</h2>
+                            <p>Data anomalies and engine warnings from this run</p>
+                          </div>
                         </div>
-                      </div>
-                    ))}
 
-                    {labResult.warnings?.map((w, i) => (
-                      <div className="insight" key={`warn-${i}`}>
-                        <div className="insight-icon neutral-icon">◆</div>
+                        {labResult.data_anomalies?.map((a, i) => (
+                          <div className="insight" key={`anom-${i}`}>
+                            <div className="insight-icon warning-icon">!</div>
+                            <div>
+                              <strong>Data anomaly</strong>
+                              <p>{a.message}</p>
+                            </div>
+                          </div>
+                        ))}
+
+                        {labResult.warnings?.map((w, i) => (
+                          <div className="insight" key={`warn-${i}`}>
+                            <div className="insight-icon neutral-icon">◆</div>
+                            <div>
+                              <strong>{w.kind}</strong>
+                              <p>{w.message}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* RandomForest Lab Results */}
+            {(labModel === 'randomforest') && (
+              <>
+                {labRandomforestResult.status === 'idle' && (
+                  <div className="panel">
+                    <div className="chart-loading">Configure a run above and hit "Run forecast".</div>
+                  </div>
+                )}
+
+                {labRandomforestResult.status === 'running' && (
+                  <div className="panel">
+                    <div className="chart-loading">Running RandomForest forecast…</div>
+                  </div>
+                )}
+
+                {labRandomforestResult.status === 'insufficient_history' && (
+                  <div className="panel">
+                    <div className="chart-loading">{labRandomforestResult.detail ?? labRandomforestResult.message}</div>
+                  </div>
+                )}
+
+                {(labRandomforestResult.status === 'error' || labRandomforestResult.status === 'already_running') && (
+                  <div className="panel">
+                    <div className="chart-loading">
+                      {labRandomforestResult.message ?? 'Another run is already in progress — wait for it to finish.'}
+                    </div>
+                  </div>
+                )}
+
+                {labRandomforestResult.status === 'ok' && labRandomforestResult.forecast && (
+                  <>
+                    <div className="panel">
+                      <div className="panel-header">
                         <div>
-                          <strong>{w.kind}</strong>
-                          <p>{w.message}</p>
+                          <h2>{labRandomforestResult.forecast.series}</h2>
+                          <p>
+                            {labRandomforestResult.forecast.spec} · {labRandomforestResult.forecast.horizon}-month forecast from{' '}
+                            {labRandomforestResult.forecast.months.length > 0 ? labRandomforestResult.forecast.months[0] : '—'}
+                          </p>
                         </div>
                       </div>
-                    ))}
-                  </div>
+
+                      <SarimaForecastChart
+                        history={filteredSales}
+                        forecast={labRandomforestResult.forecast}
+                        valueCol={labValueCol}
+                      />
+
+                      <div className="forecast-meta">
+                        <div>
+                          <strong>
+                            {labValueCol === 'revenue' ? '฿' : ''}
+                            {labRandomforestResult.forecast.annual_total.toLocaleString(undefined, {
+                              maximumFractionDigits: 0,
+                            })}
+                            {labValueCol === 'actual_units' ? ' units' : ''}
+                          </strong>
+                          <span>Forecast total ({labRandomforestResult.forecast.horizon}mo)</span>
+                        </div>
+
+                        <div>
+                          <strong>
+                            {labRandomforestResult.forecast.annual_yoy_pct !== null
+                              ? `${labRandomforestResult.forecast.annual_yoy_pct > 0 ? '+' : ''}${labRandomforestResult.forecast.annual_yoy_pct}%`
+                              : '—'}
+                          </strong>
+                          <span>YoY vs prior fiscal year</span>
+                        </div>
+
+                        <div>
+                          <strong>{labRandomforestResult.diagnostics?.holdout_mae !== null ?
+                            Math.round(labRandomforestResult.diagnostics.holdout_mae) : '—'}</strong>
+                          <span>Holdout MAE</span>
+                        </div>
+
+                        <div>
+                          <strong>{labRandomforestResult.diagnostics?.holdout_rmse !== null ?
+                            Math.round(labRandomforestResult.diagnostics.holdout_rmse) : '—'}</strong>
+                          <span>Holdout RME</span>
+                        </div>
+
+                        <div>
+                          <strong>{labRandomforestResult.diagnostics?.holdout_mape !== null ?
+                            labRandomforestResult.diagnostics.holdout_mape.toFixed(1) + '%' : '—'}</strong>
+                          <span>Holdout MAPE</span>
+                        </div>
+                      </div>
+
+                      {!labRandomforestResult.forecast.plausibility_ok && labRandomforestResult.forecast.plausibility_detail && (
+                        <div className="forecast-caveat">{labRandomforestResult.forecast.plausibility_detail}</div>
+                      )}
+                    </div>
+                  </>
                 )}
               </>
             )}
@@ -1961,4 +2202,3 @@ function App() {
 }
 
 export default App
-

@@ -10,8 +10,10 @@ dependencies = [
     "pandas>=3.0.5",
     "pymysql>=1.2.0",
     "python-dotenv>=1.2.3",
+    "scikit-learn>=1.9.1",
     "scipy>=1.18.1",
     "sqlalchemy>=2.0.52",
     "statsmodels>=0.15.0",
     "uvicorn>=0.52.4",
+    "xgboost>=3.4.1",
 ]
