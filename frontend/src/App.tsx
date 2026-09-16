@@ -1533,6 +1533,13 @@ function App() {
                           randomforestForecast.diagnostics.holdout_mape.toFixed(1) + '%' : '—'}</strong>
                         <span>Holdout MAPE</span>
                       </div>
+
+                      {/* Accuracy metric */}
+                      <div>
+                        <strong>{randomforestForecast.diagnostics?.holdout_mape !== null ?
+                          Math.max(0, 100 - randomforestForecast.diagnostics.holdout_mape).toFixed(1) + '%' : '—'}</strong>
+                        <span>Accuracy (estimated)</span>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2176,13 +2183,20 @@ function App() {
                         <div>
                           <strong>{labRandomforestResult.diagnostics?.holdout_rmse !== null ?
                             Math.round(labRandomforestResult.diagnostics.holdout_rmse) : '—'}</strong>
-                          <span>Holdout RME</span>
+                          <span>Holdout RMSE</span>
                         </div>
 
                         <div>
                           <strong>{labRandomforestResult.diagnostics?.holdout_mape !== null ?
                             labRandomforestResult.diagnostics.holdout_mape.toFixed(1) + '%' : '—'}</strong>
                           <span>Holdout MAPE</span>
+                        </div>
+
+                        {/* Accuracy metric */}
+                        <div>
+                          <strong>{labRandomforestResult.diagnostics?.holdout_mape !== null ?
+                            Math.max(0, 100 - labRandomforestResult.diagnostics.holdout_mape).toFixed(1) + '%' : '—'}</strong>
+                          <span>Accuracy (estimated)</span>
                         </div>
                       </div>
 
