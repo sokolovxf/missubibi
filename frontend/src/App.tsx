@@ -79,13 +79,20 @@ type ForecastResult = {
     plausibility_detail: string | null
   }
   diagnostics?: {
-    wf1: SarimaDiagScheme
-    wf12: SarimaDiagScheme
-    ljung_box_p: number | null
-    residuals_clean: boolean | null
-    negative_predictions_clipped: number
-    fit_warnings: number
-    fit_failures: number
+    wf1?: SarimaDiagScheme
+    wf12?: SarimaDiagScheme
+    ljung_box_p?: number | null
+    residuals_clean?: boolean | null
+    negative_predictions_clipped?: number
+    fit_warnings?: number
+    fit_failures?: number
+    holdout_mae?: number | null
+    holdout_rmse?: number | null
+    holdout_mape?: number | null
+    model_params?: Record<string, unknown>
+    training_samples?: number
+    holdout_samples?: number
+    feature_count?: number
   }
   data_anomalies?: { message: string }[]
   warnings?: { kind: string; message: string }[]
@@ -204,7 +211,7 @@ const IconSearch = ({ size = 16 }: IconProps) => (
  * ---------------------------------------------------------
  */
 
-const NAV_ITEMS: { id: ViewId; label: string; icon: (p: IconProps) => JSX.Element }[] = [
+const NAV_ITEMS: { id: ViewId; label: string; icon: (p: IconProps) => React.ReactElement }[] = [
   { id: 'overview', label: 'Overview', icon: IconGrid },
   { id: 'forecast', label: 'Sales forecast', icon: IconTrend },
   { id: 'revenue', label: 'Revenue', icon: IconCoin },
@@ -737,6 +744,7 @@ function App() {
   const [insights, setInsights] = useState<Insight[]>([])
   const [forecast, setForecast] = useState<ForecastResult>({ status: 'idle' })
   const [randomforestForecast, setRandomforestForecast] = useState<ForecastResult>({ status: 'idle' })
+  const [lstmForecast, setLstmForecast] = useState<ForecastResult>({ status: 'idle' })
 
   const [activeView, setActiveView] = useState<ViewId>('overview')
 
@@ -755,11 +763,13 @@ function App() {
   const [labValueCol, setLabValueCol] = useState<ForecastValueCol>('revenue')
   const [labHorizon, setLabHorizon] = useState(12)
   const [labFast, setLabFast] = useState(true)
-  const [labModel, setLabModel] = useState<'sarima' | 'randomforest'>('sarima')
+  const [labModel, setLabModel] = useState<'sarima' | 'randomforest' | 'lstm'>('sarima')
   const [labResult, setLabResult] = useState<ForecastResult>({ status: 'idle' })
   const [labRandomforestResult, setLabRandomforestResult] = useState<ForecastResult>({ status: 'idle' })
+  const [labLstmResult, setLabLstmResult] = useState<ForecastResult>({ status: 'idle' })
   const labPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const labRandomforestPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const labLstmPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     // Get dashboard KPI data
@@ -897,6 +907,40 @@ function App() {
     }
   }, [])
 
+  // Trigger + poll the LSTM forecast run
+  useEffect(() => {
+    let cancelled = false
+    let pollId: ReturnType<typeof setInterval>
+
+    const poll = () => {
+      fetch('http://127.0.0.1:8100/api/lstm/forecast')
+        .then((r) => r.json())
+        .then((data: ForecastResult) => {
+          if (cancelled) return
+          setLstmForecast(data)
+          if (data.status !== 'running') {
+            clearInterval(pollId)
+          }
+        })
+        .catch(() => clearInterval(pollId))
+    }
+
+    fetch('http://127.0.0.1:8100/api/lstm/forecast/run', { method: 'POST' })
+      .then(() => {
+        setLstmForecast({ status: 'running' })
+        pollId = setInterval(poll, 5000)
+        poll()
+      })
+      .catch(() =>
+        setLstmForecast({ status: 'error', message: 'Could not start LSTM forecast.' }),
+      )
+
+    return () => {
+      cancelled = true
+      clearInterval(pollId)
+    }
+  }, [])
+
   // Load the product/customer picker options once the Lab is opened.
   useEffect(() => {
     if (activeView !== 'lab') return
@@ -913,6 +957,7 @@ function App() {
     return () => {
       if (labPollRef.current) clearInterval(labPollRef.current)
       if (labRandomforestPollRef.current) clearInterval(labRandomforestPollRef.current)
+      if (labLstmPollRef.current) clearInterval(labLstmPollRef.current)
     }
   }, [])
 
@@ -1005,6 +1050,50 @@ function App() {
           poll()
         })
         .catch(() => setLabRandomforestResult({ status: 'error', message: 'Could not start RandomForest forecast.' }))
+    } else if (labModel === 'lstm') {
+      if (labLstmPollRef.current) {
+        clearInterval(labLstmPollRef.current)
+        labLstmPollRef.current = null
+      }
+
+      const body = {
+        job_id: 'lab',
+        dimension: labDimension,
+        dimension_value: labDimension === 'total' ? null : labDimensionValue,
+        value_col: labValueCol,
+        horizon: labHorizon,
+        fast: labFast,
+      }
+
+      fetch('http://127.0.0.1:8100/api/lstm/forecast/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+        .then(() => {
+          setLabLstmResult({ status: 'running' })
+          setLabResult({ status: 'idle' }) // Clear SARIMA result
+          setLabRandomforestResult({ status: 'idle' }) // Clear RandomForest result
+
+          const poll = () => {
+            fetch('http://127.0.0.1:8100/api/lstm/forecast?job_id=lab')
+              .then((r) => r.json())
+              .then((data: ForecastResult) => {
+                setLabLstmResult(data)
+                if (data.status !== 'running' && labLstmPollRef.current) {
+                  clearInterval(labLstmPollRef.current)
+                  labLstmPollRef.current = null
+                }
+              })
+              .catch(() => {
+                if (labLstmPollRef.current) clearInterval(labLstmPollRef.current)
+              })
+          }
+
+          labLstmPollRef.current = setInterval(poll, 5000)
+          poll()
+        })
+        .catch(() => setLabLstmResult({ status: 'error', message: 'Could not start LSTM forecast.' }))
     }
   }
 
@@ -1103,7 +1192,9 @@ function App() {
    */
 
   const sarimaWf1Accuracy =
-    forecast.status === 'ok' ? forecast.diagnostics?.wf1.SARIMA?.accuracy_pct : undefined
+    forecast.status === 'ok' && forecast.diagnostics?.wf1?.SARIMA?.accuracy_pct !== undefined
+      ? forecast.diagnostics.wf1.SARIMA.accuracy_pct
+      : undefined
 
   const accuracyIsPlaceholder = sarimaWf1Accuracy === undefined
   const displayedAccuracy = sarimaWf1Accuracy ?? dashboard.forecast_accuracy
@@ -1423,7 +1514,7 @@ function App() {
                 <div className="panel-header">
                   <div>
                     <h2>Model Forecasts</h2>
-                    <p>Comparison of SARIMA and RandomForest forecasts</p>
+                    <p>Comparison of SARIMA, RandomForest, and LSTM forecasts</p>
                   </div>
                 </div>
 
@@ -1466,12 +1557,12 @@ function App() {
                       </div>
 
                       <div>
-                        <strong>{forecast.diagnostics?.wf1.SARIMA?.accuracy_pct}%</strong>
+                        <strong>{forecast.diagnostics?.wf1?.SARIMA?.accuracy_pct ?? '—'}%</strong>
                         <span>1-month accuracy (validated)</span>
                       </div>
 
                       <div>
-                        <strong>{forecast.diagnostics?.wf12.SARIMA?.accuracy_pct}%</strong>
+                        <strong>{forecast.diagnostics?.wf12?.SARIMA?.accuracy_pct ?? '—'}%</strong>
                         <span>12-month accuracy</span>
                       </div>
                     </div>
@@ -1517,27 +1608,101 @@ function App() {
                       </div>
 
                       <div>
-                        <strong>{randomforestForecast.diagnostics?.holdout_mae !== null ?
-                          Math.round(randomforestForecast.diagnostics.holdout_mae) : '—'}</strong>
+                        <strong>{randomforestForecast.diagnostics?.holdout_mae !== undefined && randomforestForecast.diagnostics.holdout_mae !== null
+                          ? Math.round(randomforestForecast.diagnostics.holdout_mae)
+                          : '—'}</strong>
                         <span>Holdout MAE</span>
                       </div>
 
                       <div>
-                        <strong>{randomforestForecast.diagnostics?.holdout_rmse !== null ?
-                          Math.round(randomforestForecast.diagnostics.holdout_rmse) : '—'}</strong>
+                        <strong>{randomforestForecast.diagnostics?.holdout_rmse !== undefined && randomforestForecast.diagnostics.holdout_rmse !== null
+                          ? Math.round(randomforestForecast.diagnostics.holdout_rmse)
+                          : '—'}</strong>
                         <span>Holdout RMSE</span>
                       </div>
 
                       <div>
-                        <strong>{randomforestForecast.diagnostics?.holdout_mape !== null ?
-                          randomforestForecast.diagnostics.holdout_mape.toFixed(1) + '%' : '—'}</strong>
+                        <strong>{randomforestForecast.diagnostics?.holdout_mape !== undefined && randomforestForecast.diagnostics.holdout_mape !== null
+                          ? randomforestForecast.diagnostics.holdout_mape.toFixed(1) + '%'
+                          : '—'}</strong>
                         <span>Holdout MAPE</span>
                       </div>
 
                       {/* Accuracy metric */}
                       <div>
-                        <strong>{randomforestForecast.diagnostics?.holdout_mape !== null ?
-                          Math.max(0, 100 - randomforestForecast.diagnostics.holdout_mape).toFixed(1) + '%' : '—'}</strong>
+                        <strong>{randomforestForecast.diagnostics?.holdout_mape !== undefined && randomforestForecast.diagnostics.holdout_mape !== null
+                          ? Math.max(0, 100 - randomforestForecast.diagnostics.holdout_mape).toFixed(1) + '%'
+                          : '—'}</strong>
+                        <span>Accuracy (estimated)</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* LSTM Forecast */}
+                {lstmForecast.status === 'running' && (
+                  <div className="chart-loading">Running LSTM forecast…</div>
+                )}
+
+                {lstmForecast.status === 'insufficient_history' && (
+                  <div className="chart-loading">{lstmForecast.message}</div>
+                )}
+
+                {lstmForecast.status === 'error' && (
+                  <div className="chart-loading">{lstmForecast.message}</div>
+                )}
+
+                {lstmForecast.status === 'ok' && lstmForecast.forecast && (
+                  <div className="model-forecast lstm-forecast">
+                    <h3>LSTM Forecast</h3>
+                    <SarimaForecastChart
+                      history={filteredSales}
+                      forecast={lstmForecast.forecast}
+                      valueCol="revenue"
+                    />
+                    <div className="forecast-meta">
+                      <div>
+                        <strong>
+                          ฿{(lstmForecast.forecast.annual_total / 1_000_000).toFixed(1)}M
+                        </strong>
+                        <span>Forecast annual total</span>
+                      </div>
+
+                      <div>
+                        <strong>
+                          {lstmForecast.forecast.annual_yoy_pct !== null
+                            ? `${lstmForecast.forecast.annual_yoy_pct > 0 ? '+' : ''}${lstmForecast.forecast.annual_yoy_pct}%`
+                            : '—'}
+                        </strong>
+                        <span>YoY vs FY2024</span>
+                      </div>
+
+                      <div>
+                        <strong>{lstmForecast.diagnostics?.holdout_mae !== undefined && lstmForecast.diagnostics.holdout_mae !== null
+                          ? Math.round(lstmForecast.diagnostics.holdout_mae)
+                          : '—'}</strong>
+                        <span>Holdout MAE</span>
+                      </div>
+
+                      <div>
+                        <strong>{lstmForecast.diagnostics?.holdout_rmse !== undefined && lstmForecast.diagnostics.holdout_rmse !== null
+                          ? Math.round(lstmForecast.diagnostics.holdout_rmse)
+                          : '—'}</strong>
+                        <span>Holdout RMSE</span>
+                      </div>
+
+                      <div>
+                        <strong>{lstmForecast.diagnostics?.holdout_mape !== undefined && lstmForecast.diagnostics.holdout_mape !== null
+                          ? lstmForecast.diagnostics.holdout_mape.toFixed(1) + '%'
+                          : '—'}</strong>
+                        <span>Holdout MAPE</span>
+                      </div>
+
+                      {/* Accuracy metric */}
+                      <div>
+                        <strong>{lstmForecast.diagnostics?.holdout_mape !== undefined && lstmForecast.diagnostics.holdout_mape !== null
+                          ? Math.max(0, 100 - lstmForecast.diagnostics.holdout_mape).toFixed(1) + '%'
+                          : '—'}</strong>
                         <span>Accuracy (estimated)</span>
                       </div>
                     </div>
@@ -1546,9 +1711,10 @@ function App() {
 
                 {/* Show message if no forecasts are available */}
                 {!((forecast.status === 'ok' && forecast.forecast) ||
-                   (randomforestForecast.status === 'ok' && randomforestForecast.forecast)) &&
-                ((forecast.status === 'running' || randomforestForecast.status === 'running') ||
-                 (forecast.status === 'idle' && randomforestForecast.status === 'idle')) && (
+                   (randomforestForecast.status === 'ok' && randomforestForecast.forecast) ||
+                   (lstmForecast.status === 'ok' && lstmForecast.forecast)) &&
+                ((forecast.status === 'running' || randomforestForecast.status === 'running' || lstmForecast.status === 'running') ||
+                 (forecast.status === 'idle' && randomforestForecast.status === 'idle' && lstmForecast.status === 'idle')) && (
                   <div className="chart-loading">No forecast data available. Start a forecast to see predictions.</div>
                 )}
               </div>
@@ -1835,7 +2001,7 @@ function App() {
               <div className="panel-header">
                 <div>
                   <h2>Run configuration</h2>
-                  <p>Pick a series and validation depth, then run the SARIMA engine directly</p>
+                  <p>Pick a series and validation depth, then run the SARIMA, RandomForest, or LSTM engine directly</p>
                 </div>
               </div>
 
@@ -1844,10 +2010,11 @@ function App() {
                   Model
                   <select
                     value={labModel}
-                    onChange={(e) => setLabModel(e.target.value as 'sarima' | 'randomforest')}
+                    onChange={(e) => setLabModel(e.target.value as 'sarima' | 'randomforest' | 'lstm')}
                   >
                     <option value="sarima">SARIMA</option>
                     <option value="randomforest">Random Forest</option>
+                    <option value="lstm">LSTM</option>
                   </select>
                 </label>
 
@@ -1922,11 +2089,16 @@ function App() {
                   disabled={
                     (labModel === 'sarima' && labResult.status === 'running') ||
                     (labModel === 'randomforest' && labRandomforestResult.status === 'running') ||
+                    (labModel === 'lstm' && labLstmResult.status === 'running') ||
                     (labDimension !== 'total' && !labDimensionValue)
                   }
                 >
-                  {(labModel === 'sarima' ? labResult.status === 'running' : labRandomforestResult.status === 'running')
+                  {(labModel === 'sarima' && labResult.status === 'running')
                     ? 'Running… (40–90s)'
+                    : (labModel === 'randomforest' && labRandomforestResult.status === 'running')
+                    ? 'Running…'
+                    : (labModel === 'lstm' && labLstmResult.status === 'running')
+                    ? 'Running…'
                     : 'Run forecast'}
                 </button>
               </div>
@@ -2175,33 +2347,145 @@ function App() {
                         </div>
 
                         <div>
-                          <strong>{labRandomforestResult.diagnostics?.holdout_mae !== null ?
-                            Math.round(labRandomforestResult.diagnostics.holdout_mae) : '—'}</strong>
+                          <strong>{labRandomforestResult.diagnostics?.holdout_mae !== undefined && labRandomforestResult.diagnostics.holdout_mae !== null
+                            ? Math.round(labRandomforestResult.diagnostics.holdout_mae)
+                            : '—'}</strong>
                           <span>Holdout MAE</span>
                         </div>
 
                         <div>
-                          <strong>{labRandomforestResult.diagnostics?.holdout_rmse !== null ?
-                            Math.round(labRandomforestResult.diagnostics.holdout_rmse) : '—'}</strong>
+                          <strong>{labRandomforestResult.diagnostics?.holdout_rmse !== undefined && labRandomforestResult.diagnostics.holdout_rmse !== null
+                            ? Math.round(labRandomforestResult.diagnostics.holdout_rmse)
+                            : '—'}</strong>
                           <span>Holdout RMSE</span>
                         </div>
 
                         <div>
-                          <strong>{labRandomforestResult.diagnostics?.holdout_mape !== null ?
-                            labRandomforestResult.diagnostics.holdout_mape.toFixed(1) + '%' : '—'}</strong>
+                          <strong>{labRandomforestResult.diagnostics?.holdout_mape !== undefined && labRandomforestResult.diagnostics.holdout_mape !== null
+                            ? labRandomforestResult.diagnostics.holdout_mape.toFixed(1) + '%'
+                            : '—'}</strong>
                           <span>Holdout MAPE</span>
                         </div>
 
                         {/* Accuracy metric */}
                         <div>
-                          <strong>{labRandomforestResult.diagnostics?.holdout_mape !== null ?
-                            Math.max(0, 100 - labRandomforestResult.diagnostics.holdout_mape).toFixed(1) + '%' : '—'}</strong>
+                          <strong>{labRandomforestResult.diagnostics?.holdout_mape !== undefined && labRandomforestResult.diagnostics.holdout_mape !== null
+                            ? Math.max(0, 100 - labRandomforestResult.diagnostics.holdout_mape).toFixed(1) + '%'
+                            : '—'}</strong>
                           <span>Accuracy (estimated)</span>
                         </div>
                       </div>
 
                       {!labRandomforestResult.forecast.plausibility_ok && labRandomforestResult.forecast.plausibility_detail && (
                         <div className="forecast-caveat">{labRandomforestResult.forecast.plausibility_detail}</div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            {/* LSTM Lab Results */}
+            {(labModel === 'lstm') && (
+              <>
+                {labLstmResult.status === 'idle' && (
+                  <div className="panel">
+                    <div className="chart-loading">Configure a run above and hit "Run forecast".</div>
+                  </div>
+                )}
+
+                {labLstmResult.status === 'running' && (
+                  <div className="panel">
+                    <div className="chart-loading">Running LSTM forecast…</div>
+                  </div>
+                )}
+
+                {labLstmResult.status === 'insufficient_history' && (
+                  <div className="panel">
+                    <div className="chart-loading">{labLstmResult.detail ?? labLstmResult.message}</div>
+                  </div>
+                )}
+
+                {(labLstmResult.status === 'error' || labLstmResult.status === 'already_running') && (
+                  <div className="panel">
+                    <div className="chart-loading">
+                      {labLstmResult.message ?? 'Another run is already in progress — wait for it to finish.'}
+                    </div>
+                  </div>
+                )}
+
+                {labLstmResult.status === 'ok' && labLstmResult.forecast && (
+                  <>
+                    <div className="panel">
+                      <div className="panel-header">
+                        <div>
+                          <h2>{labLstmResult.forecast.series}</h2>
+                          <p>
+                            {labLstmResult.forecast.spec} · {labLstmResult.forecast.horizon}-month forecast from{' '}
+                            {labLstmResult.forecast.months.length > 0 ? labLstmResult.forecast.months[0] : '—'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <SarimaForecastChart
+                        history={filteredSales}
+                        forecast={labLstmResult.forecast}
+                        valueCol={labValueCol}
+                      />
+
+                      <div className="forecast-meta">
+                        <div>
+                          <strong>
+                            {labValueCol === 'revenue' ? '฿' : ''}
+                            {labLstmResult.forecast.annual_total.toLocaleString(undefined, {
+                              maximumFractionDigits: 0,
+                            })}
+                            {labValueCol === 'actual_units' ? ' units' : ''}
+                          </strong>
+                          <span>Forecast total ({labLstmResult.forecast.horizon}mo)</span>
+                        </div>
+
+                        <div>
+                          <strong>
+                            {labLstmResult.forecast.annual_yoy_pct !== null
+                              ? `${labLstmResult.forecast.annual_yoy_pct > 0 ? '+' : ''}${labLstmResult.forecast.annual_yoy_pct}%`
+                              : '—'}
+                          </strong>
+                          <span>YoY vs prior fiscal year</span>
+                        </div>
+
+                        <div>
+                          <strong>{labLstmResult.diagnostics?.holdout_mae !== undefined && labLstmResult.diagnostics.holdout_mae !== null
+                            ? Math.round(labLstmResult.diagnostics.holdout_mae)
+                            : '—'}</strong>
+                          <span>Holdout MAE</span>
+                        </div>
+
+                        <div>
+                          <strong>{labLstmResult.diagnostics?.holdout_rmse !== undefined && labLstmResult.diagnostics.holdout_rmse !== null
+                            ? Math.round(labLstmResult.diagnostics.holdout_rmse)
+                            : '—'}</strong>
+                          <span>Holdout RMSE</span>
+                        </div>
+
+                        <div>
+                          <strong>{labLstmResult.diagnostics?.holdout_mape !== undefined && labLstmResult.diagnostics.holdout_mape !== null
+                            ? labLstmResult.diagnostics.holdout_mape.toFixed(1) + '%'
+                            : '—'}</strong>
+                          <span>Holdout MAPE</span>
+                        </div>
+
+                        {/* Accuracy metric */}
+                        <div>
+                          <strong>{labLstmResult.diagnostics?.holdout_mape !== undefined && labLstmResult.diagnostics.holdout_mape !== null
+                            ? Math.max(0, 100 - labLstmResult.diagnostics.holdout_mape).toFixed(1) + '%'
+                            : '—'}</strong>
+                          <span>Accuracy (estimated)</span>
+                        </div>
+                      </div>
+
+                      {!labLstmResult.forecast.plausibility_ok && labLstmResult.forecast.plausibility_detail && (
+                        <div className="forecast-caveat">{labLstmResult.forecast.plausibility_detail}</div>
                       )}
                     </div>
                   </>

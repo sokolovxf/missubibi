@@ -683,6 +683,7 @@ def get_randomforest_forecast(
 
     # Import here to avoid circular imports
     from app.services import randomforest_engine
+    from app.services import lstm_engine
 
     result = randomforest_engine.run_forecast(
         sales_df,
@@ -731,6 +732,149 @@ def get_randomforest_forecast_for(
     )
 
     return get_randomforest_forecast(
+        monthly,
+        horizon=horizon,
+        fast=fast,
+        value_col=value_col,
+        series_name=series_name,
+        use_cache=use_cache,
+        debug=debug,
+    )
+
+
+# =============================================================================
+# LSTM FORECAST
+# =============================================================================
+# Wraps the LSTM engine (app/services/lstm_engine.py) behind one function.
+#
+# WHAT IT EXPECTS
+#   A monthly DataFrame in this project's own shape - the same frame
+#   get_sales_data() returns:
+#
+#     month          "2025-01" / a date / anything pd.to_datetime parses  (required)
+#     revenue        numeric                                              (preferred)
+#     actual_units   numeric - used only if there is no revenue column
+#
+#   Extra columns (product, customer, forecast_units) are ignored. Rows are
+#   summed per calendar month, so transaction-level rows work too.
+#
+#   HISTORY IS THE BINDING CONSTRAINT. The model needs at least 24 months
+#   of history to create lag features. While it can work with less, the
+#   forecast quality may be poor.
+#
+# COST
+#   A run trains an LSTM model and generates a recursive forecast.
+#   Speed depends on data size and horizon but is generally faster than SARIMA.
+#   Results are cached per input frame, but the FIRST call may take a few seconds.
+# =============================================================================
+
+_LSTM_FORECAST_CACHE: dict = {}
+_LSTM_CACHE_LIMIT = 8
+
+
+def get_lstm_forecast(
+    sales_df=None,
+    *,
+    horizon=12,
+    fast=True,
+    value_col=None,
+    month_col=None,
+    series_name="revenue_total",
+    use_cache=True,
+    debug=False,
+):
+    """Forecast the next `horizon` months using LSTM and report how much to trust it.
+
+    Args:
+        sales_df:    monthly DataFrame (see the header above). Defaults to
+                     get_sales_data() so the signature matches the other
+                     functions in this module.
+        horizon:     months to forecast. 12 = one fiscal year.
+        fast:        use fewer epochs for faster training (less accurate).
+        value_col:   force the column to forecast. Auto-detected otherwise.
+        month_col:   force the month column. Auto-detected otherwise.
+        use_cache:   reuse a previous result for an identical frame.
+        debug:       print the engine's notes as they are raised.
+
+    Returns a JSON-serialisable dict. Always has "status"; the caller should
+    branch on it rather than assume a forecast came back:
+
+        status  "ok"                    -> "forecast" and "diagnostics" are populated
+                "insufficient_history"  -> "detail" says what is missing
+                "error"                 -> "message" carries the exception
+
+        forecast        spec, months, point, lower_90, upper_90, annual_total,
+                        annual_yoy_pct, plausibility_ok
+        diagnostics     holdout_mae, holdout_rmse, holdout_mape, model_params,
+                        training_samples, holdout_samples, feature_count
+        fiscal_years    which fiscal years were used, and the one forecast
+        data_anomalies  []
+        warnings        [{kind, message}] raised during the run
+    """
+    if sales_df is None:
+        sales_df = get_sales_data()
+
+    key = None
+    if use_cache:
+        try:
+            key = _frame_fingerprint(sales_df, horizon, fast, value_col, month_col)
+            if key in _LSTM_FORECAST_CACHE:
+                cached = dict(_LSTM_FORECAST_CACHE[key])
+                cached["cached"] = True
+                return cached
+        except Exception:
+            key = None                      # an unhashable frame just skips the cache
+
+    # Import here to avoid circular imports
+    from app.services import lstm_engine
+
+    result = lstm_engine.run_forecast(
+        sales_df,
+        horizon=horizon,
+        fast=fast,
+        value_col=value_col,
+        month_col=month_col,
+        series_name=series_name,
+        debug=debug,
+    )
+    result["cached"] = False
+
+    if key is not None and result.get("status") == "ok":
+        if len(_LSTM_FORECAST_CACHE) >= _LSTM_CACHE_LIMIT:
+            _LSTM_FORECAST_CACHE.pop(next(iter(_LSTM_FORECAST_CACHE)))
+        _LSTM_FORECAST_CACHE[key] = result
+
+    return result
+
+
+def get_lstm_forecast_for(
+    dimension="total",
+    dimension_value=None,
+    value_col="revenue",
+    horizon=12,
+    fast=True,
+    use_cache=True,
+    debug=False,
+):
+    """Slice a series by dimension/dimension_value, then forecast it using LSTM.
+
+    dimension="total" + value_col="revenue" reproduces the original
+    whole-company forecast (series_name="revenue_total") the dashboard
+    KPIs already depend on — this function is a strict superset, not a
+    replacement, of calling get_lstm_forecast() directly.
+
+    Raises ValueError before ever touching LSTM if dimension_value is
+    missing/unmatched — the caller (routes.py) turns that into a clean
+    "error" status rather than a raw 500.
+    """
+    monthly = _slice_series(dimension, dimension_value)
+
+    series_name = (
+        f"{value_col}_total" if dimension == "total"
+        else f"{dimension}:{dimension_value}:{value_col}"
+    )
+
+    return get_lstm_forecast(
         monthly,
         horizon=horizon,
         fast=fast,

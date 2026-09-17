@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales Forecast Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<style>
+:root{
+  --bg:#F3F6FD; --panel:#FFFFFF; --panel-2:#F4F7FC; --line:#E3E9F3; --ink:#111C33; --ink-2:#48566E; --ink-3:#8491A7;
+  --accent:#2F6BFF; --accent-2:#5B8CFF; --accent-soft:#E8EFFF; --accent-ink:#FFFFFF;
+  --hero:#2F6BFF; --hero-2:#1F55E0; --hero-ink:#FFFFFF;
+  --actual:#1E293B; --actual-fill:rgba(30,41,59,.05); --test:#FF8A00; --band:rgba(47,107,255,.16); --zone:rgba(255,138,0,.08);
+  --good:#00A36C; --good-soft:#DDF7EC; --ok:#C27C00; --ok-soft:#FFF1D6; --bad:#E5374F; --bad-soft:#FFE3E7;
+  --c1:#2F6BFF; --c1s:#E8EFFF; --c2:#00B37E; --c2s:#DDF7EC; --c3:#8B5CF6; --c3s:#EFE8FF; --c4:#FF8A00; --c4s:#FFF0DC;
+  --m1:#2F6BFF; --m2:#8B5CF6; --m3:#00B37E; --m4:#FF4D8D; --m5:#00B8D9; --m6:#FFB400; --m7:#94A3B8;
+  --shadow:0 1px 2px rgba(17,28,51,.04),0 4px 14px rgba(17,28,51,.05);
+  --font:"Public Sans","Segoe UI",system-ui,-apple-system,Arial,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0B1222; --panel:#131C30; --panel-2:#1A2540; --line:#25324F; --ink:#EEF3FF; --ink-2:#B3BFD6; --ink-3:#8290AB;
+    --accent:#6E97FF; --accent-2:#8FB0FF; --accent-soft:#1D2C55; --accent-ink:#0B1222;
+    --hero:#2A55D6; --hero-2:#2148B8; --hero-ink:#FFFFFF;
+    --actual:#E2E8F5; --actual-fill:rgba(226,232,245,.05); --test:#FFA940; --band:rgba(110,151,255,.2); --zone:rgba(255,169,64,.09);
+    --good:#34D399; --good-soft:#0F3A2C; --ok:#FBBF24; --ok-soft:#3B2E0E; --bad:#FB7185; --bad-soft:#42182233;
+    --c1:#6E97FF; --c1s:#1D2C55; --c2:#34D399; --c2s:#0F3A2C; --c3:#A78BFA; --c3s:#2A2150; --c4:#FFA940; --c4s:#3B2A12;
+    --m1:#6E97FF; --m2:#A78BFA; --m3:#34D399; --m4:#FF7AA8; --m5:#38D5F0; --m6:#FFC940; --m7:#94A3B8;
+    --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+    --bg:#0B1222; --panel:#131C30; --panel-2:#1A2540; --line:#25324F; --ink:#EEF3FF; --ink-2:#B3BFD6; --ink-3:#8290AB;
+    --accent:#6E97FF; --accent-2:#8FB0FF; --accent-soft:#1D2C55; --accent-ink:#0B1222;
+    --hero:#2A55D6; --hero-2:#2148B8; --hero-ink:#FFFFFF;
+    --actual:#E2E8F5; --actual-fill:rgba(226,232,245,.05); --test:#FFA940; --band:rgba(110,151,255,.2); --zone:rgba(255,169,64,.09);
+    --good:#34D399; --good-soft:#0F3A2C; --ok:#FBBF24; --ok-soft:#3B2E0E; --bad:#FB7185; --bad-soft:#421822;
+    --c1:#6E97FF; --c1s:#1D2C55; --c2:#34D399; --c2s:#0F3A2C; --c3:#A78BFA; --c3s:#2A2150; --c4:#FFA940; --c4s:#3B2A12;
+    --m1:#6E97FF; --m2:#A78BFA; --m3:#34D399; --m4:#FF7AA8; --m5:#38D5F0; --m6:#FFC940; --m7:#94A3B8;
+    --shadow:none;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--font);font-size:14px;line-height:1.5;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.inner{max-width:1400px;margin:0 auto;padding:0 24px}
+@media (max-width:700px){.inner{padding:0 12px}}
+
+/* bright header */
+.hero{background:var(--hero);color:var(--hero-ink);padding:18px 0 56px}
+.hero-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.brand{display:flex;align-items:center;gap:12px}
+.mark{width:40px;height:40px;border-radius:12px;background:rgba(255,255,255,.18);display:grid;place-items:center;flex:none}
+.brand h1{margin:0;font-size:22px;font-weight:700;letter-spacing:-.015em}
+.brand p{margin:0;font-size:13px;opacity:.85}
+.hero-actions{display:flex;align-items:center;gap:8px}
+.status{display:inline-flex;align-items:center;gap:7px;font-size:13px;padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.14)}
+.status .dot{width:8px;height:8px;border-radius:50%;background:#7CF2B8}
+.status.busy .dot{background:#FFD166;animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.status.busy .dot{animation:none}}
+.hbtn{border:0;background:rgba(255,255,255,.16);color:#fff;border-radius:10px;padding:8px 14px;cursor:pointer;font-weight:600;min-height:38px}
+.hbtn:hover,.hbtn[aria-expanded="true"]{background:rgba(255,255,255,.28)}
+.hbtn.solid{background:#fff;color:var(--hero-2)}
+.hbtn.solid:hover{background:#EEF3FF}
+.hero :focus-visible{outline-color:#fff}
+
+.toolbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:14px 18px}
+.ctl{display:flex;flex-direction:column;gap:5px}
+.ctl > span{font-size:12px;font-weight:600;color:var(--ink-3)}
+.hero .ctl > span{color:rgba(255,255,255,.85)}
+select,input[type=number]{padding:8px 11px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);min-height:40px}
+.hero select{background:#fff;color:#111C33;border-color:transparent;font-weight:500}
+.seg{display:inline-flex;gap:4px;padding:4px;border-radius:12px;background:rgba(255,255,255,.16)}
+.seg button{border:0;background:none;color:#fff;padding:6px 14px;border-radius:8px;cursor:pointer;font-weight:600;min-height:32px}
+.seg button:hover{background:rgba(255,255,255,.14)}
+.seg button[aria-pressed="true"]{background:#fff;color:var(--hero-2)}
+#dataSel{min-width:230px}
+#modelSel{min-width:220px}
+
+/* page body pulls up over the header */
+.body{margin-top:-38px}
+.card,.w{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.drawer{display:none;padding:16px 18px;margin-bottom:16px}
+.drawer.open{display:block}
+.drawer-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px 18px;align-items:end}
+.drawer h3{margin:16px 0 6px;font-size:14px;font-weight:700}
+.drawer h3:first-child{margin-top:0}
+.drawer .hint{grid-column:1/-1}
+.check{display:flex;gap:8px;align-items:center;cursor:pointer;color:var(--ink-2);min-height:40px}
+.check input{accent-color:var(--accent);width:17px;height:17px}
+.check.disabled{opacity:.5;cursor:not-allowed}
+.hint{font-size:12px;color:var(--ink-3);margin:2px 0 0}
+.alert{display:none;padding:11px 16px;border-radius:12px;background:var(--bad-soft);color:var(--bad);margin-bottom:14px;font-weight:500}
+.alert.show{display:block}
+
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
+.w{padding:18px 20px;min-width:0}
+.w-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.w-head h2{margin:0;font-size:16px;font-weight:700;letter-spacing:-.005em}
+.w-head p{margin:2px 0 0;font-size:12.5px;color:var(--ink-3)}
+.kpi{grid-column:span 3}
+.w-chart{grid-column:span 8}
+.w-models{grid-column:span 4}
+.w-table{grid-column:span 5}
+.w-season{grid-column:span 4}
+.w-insight{grid-column:span 3}
+@media (max-width:1180px){.kpi{grid-column:span 6}.w-chart,.w-models,.w-table{grid-column:span 12}.w-season,.w-insight{grid-column:span 6}}
+@media (max-width:700px){.kpi,.w-season,.w-insight{grid-column:span 12}.grid{gap:12px}}
+
+.kpi{display:flex;gap:14px;align-items:flex-start}
+.ico{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;flex:none;background:var(--tint);color:var(--tone)}
+.ico svg{width:22px;height:22px}
+.kpi.c1{--tone:var(--c1);--tint:var(--c1s)} .kpi.c2{--tone:var(--c2);--tint:var(--c2s)}
+.kpi.c3{--tone:var(--c3);--tint:var(--c3s)} .kpi.c4{--tone:var(--c4);--tint:var(--c4s)}
+.kpi .l{font-size:13px;color:var(--ink-2);font-weight:600}
+.kpi .v{font-size:28px;font-weight:700;letter-spacing:-.02em;line-height:1.15;margin:3px 0 4px}
+.kpi .s{font-size:12.5px;color:var(--ink-3)}
+.kpi > div:last-child{min-width:0}
+.up{color:var(--good)} .down{color:var(--bad)}
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-weight:700;font-size:12px}
+.pill.up{background:var(--good-soft)} .pill.down{background:var(--bad-soft)}
+.badge{display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;font-weight:700;font-size:12px;white-space:nowrap}
+.badge.good{background:var(--good-soft);color:var(--good)}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}
+.badge.bad{background:var(--bad-soft);color:var(--bad)}
+.badge.idle{background:var(--panel-2);color:var(--ink-3)}
+
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-2);align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:18px;height:4px;border-radius:2px}
+.legend i.dash{background:repeating-linear-gradient(90deg,var(--test) 0 5px,transparent 5px 8px)}
+.legend i.area{height:12px;background:var(--band)}
+.w-chart{display:flex;flex-direction:column}
+.chart-box{position:relative;height:350px;flex:1 1 auto;min-height:350px}
+.season-box{position:relative;height:200px}
+@media (max-width:700px){.chart-box{height:280px}}
+.switch{display:inline-flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;color:var(--ink-2);cursor:pointer}
+.switch input{accent-color:var(--accent);width:16px;height:16px}
+
+.mlist{display:flex;flex-direction:column;gap:8px}
+.mrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px 12px;align-items:center;border:1.5px solid transparent;border-radius:12px;padding:10px 12px;cursor:pointer;background:var(--panel-2);text-align:left;width:100%}
+.mrow:hover{border-color:var(--accent-2)}
+.mrow.active{border-color:var(--accent);background:var(--accent-soft)}
+.sw{width:12px;height:12px;border-radius:4px}
+.mname{font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tag{font-size:11px;font-weight:700;padding:1px 8px;border-radius:999px;background:var(--good-soft);color:var(--good)}
+.tag.use{background:var(--accent);color:var(--accent-ink)}
+.mscore{font-weight:700;font-size:15px;text-align:right;white-space:nowrap}
+.mscore.run{font-size:12px;color:var(--accent);background:var(--panel);padding:3px 10px;border-radius:999px;border:1px solid var(--accent-2)}
+.mbar{grid-column:2/4;height:7px;border-radius:4px;background:var(--line);overflow:hidden}
+.mbar b{display:block;height:100%;border-radius:4px}
+.msub{grid-column:2/4;font-size:12px;color:var(--ink-3)}
+
+.table-box{overflow:auto;max-height:310px}
+table{border-collapse:collapse;width:100%}
+th,td{padding:8px 10px;text-align:right;white-space:nowrap}
+td{border-bottom:1px solid var(--line)}
+th{position:sticky;top:0;background:var(--panel-2);font-weight:600;color:var(--ink-2);font-size:12px}
+th:first-child{border-radius:8px 0 0 8px} th:last-child{border-radius:0 8px 8px 0}
+th:first-child,td:first-child{text-align:left}
+td.fc{color:var(--accent);font-weight:700}
+tr.total td{border-bottom:0;font-weight:700;background:var(--accent-soft)}
+tbody tr:not(.total):hover{background:var(--panel-2)}
+
+.insights{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.insights li{padding:10px 12px;border-radius:12px;background:var(--panel-2);color:var(--ink-2)}
+.insights li b{color:var(--ink)}
+.insights li.hl{background:var(--accent-soft)}
+.empty{color:var(--ink-3);padding:24px 4px;text-align:center}
+
+.drop{position:fixed;inset:0;background:rgba(47,107,255,.14);border:3px dashed var(--accent);display:none;place-items:center;z-index:50;font-size:20px;font-weight:700;color:var(--accent)}
+.drop.show{display:grid}
+.foot{font-size:12px;color:var(--ink-3);margin:16px 0 28px;text-align:center}
+</style>
+</head>
+<body>
+<div class="drop" id="drop">Drop your sales CSV to forecast it</div>
+<header class="hero">
+ <div class="inner">
+  <div class="hero-top">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-6 4 3 4-6"/><path d="M16 8l5-3" stroke-dasharray="2 2.5"/></svg></div>
+      <div><h1>Sales Forecast</h1><p id="subtitle">Pick your data and how far ahead to look. The rest is automatic.</p></div>
+    </div>
+    <div class="hero-actions">
+      <span class="status" id="status" role="status"><span class="dot"></span><span id="statusText">Ready</span></span>
+      <button class="hbtn" id="settingsBtn" type="button" aria-expanded="false" aria-controls="drawer">Settings</button>
+      <button class="hbtn" id="themeBtn" type="button" aria-label="Switch light or dark theme">Theme</button>
+    </div>
+  </div>
+  <div class="toolbar">
+    <label class="ctl"><span>Sales data</span><select id="dataSel"></select></label>
+    <button class="hbtn solid" id="uploadBtn" type="button">Upload CSV</button>
+    <div class="ctl"><span>Forecast ahead</span><div class="seg" id="horizonSeg" role="group" aria-label="Forecast length"></div></div>
+    <label class="ctl"><span>Model</span><select id="modelSel"></select></label>
+    <input type="file" id="fileInput" accept=".csv,.txt,text/csv" hidden>
+  </div>
+ </div>
+</header>
+
+<div class="inner body">
+  <section class="card drawer" id="drawer" aria-label="Settings">
+    <h3>General</h3>
+    <div class="drawer-grid">
+      <label class="ctl"><span>Currency</span>
+        <select id="curSel">
+          <option value="$">$ Dollar</option><option value="฿">฿ Baht</option><option value="€">€ Euro</option><option value="£">£ Pound</option><option value="¥">¥ Yen</option><option value="">No symbol</option>
+        </select>
+      </label>
+      <label class="ctl"><span>Periods held back for testing</span><input type="number" id="testIn" min="3" max="60"></label>
+      <label class="ctl"><span>Season length</span><input type="number" id="seasonIn" min="1" max="60"></label>
+      <label class="check" id="logWrap"><input type="checkbox" id="logIn"> Log scale (for growing swings)</label>
+      <label class="check"><input type="checkbox" id="aiIn"> Include AI models in Auto (slower)</label>
+      <p class="hint">Each model trains without the testing periods, then we measure how close it got. That score decides the Auto pick.</p>
+    </div>
+    <h3 id="paramTitle">Model settings</h3>
+    <div class="drawer-grid" id="paramBox"></div>
+  </section>
+
+  <div class="alert" id="alert" role="alert"></div>
+
+  <main class="grid">
+    <section class="w kpi c1"><div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg></div><div><div class="l" id="k1l">Next month</div><div class="v" id="k1">–</div><div class="s" id="k1s">&nbsp;</div></div></section>
+    <section class="w kpi c2"><div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M15 9.5c0-1.4-1.3-2-3-2s-3 .8-3 2 1.2 1.7 3 2.1 3 .9 3 2.3-1.3 2.1-3 2.1-3-.7-3-2"/></svg></div><div><div class="l" id="k2l">Total forecast</div><div class="v" id="k2">–</div><div class="s" id="k2s">&nbsp;</div></div></section>
+    <section class="w kpi c3"><div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg></div><div><div class="l">Growth</div><div class="v" id="k3">–</div><div class="s" id="k3s">&nbsp;</div></div></section>
+    <section class="w kpi c4"><div class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg></div><div><div class="l">Forecast accuracy</div><div class="v" id="k4">–</div><div class="s" id="k4s">&nbsp;</div></div></section>
+
+    <section class="w w-chart">
+      <div class="w-head"><div><h2 id="chartTitle">Sales and forecast</h2><p id="chartSub">&nbsp;</p></div>
+        <div class="legend" id="legend"></div></div>
+      <div class="chart-box"><canvas id="chart" role="img" aria-label="Sales history and forecast chart"></canvas></div>
+      <label class="switch"><input type="checkbox" id="allIn"> Compare all model forecasts on the chart</label>
+    </section>
+
+    <section class="w w-models">
+      <div class="w-head"><div><h2>Model scoreboard</h2><p>Tap a model to use it. Higher is better.</p></div></div>
+      <div class="mlist" id="mlist"></div>
+    </section>
+
+    <section class="w w-table">
+      <div class="w-head"><div><h2>Forecast by period</h2><p>Low and high show the likely range.</p></div></div>
+      <div class="table-box" id="tableBox"><div class="empty">Forecast loading…</div></div>
+    </section>
+
+    <section class="w w-season">
+      <div class="w-head"><div><h2>Seasonal pattern</h2><p id="seasonSub">How each period compares with a typical one.</p></div></div>
+      <div class="season-box"><canvas id="seasonChart" role="img" aria-label="Seasonal pattern chart"></canvas></div>
+      <p class="hint" id="seasonNote"></p>
+    </section>
+
+    <section class="w w-insight">
+      <div class="w-head"><div><h2>Key takeaways</h2></div></div>
+      <ul class="insights" id="insights"><li>Working out the forecast…</li></ul>
+    </section>
+  </main>
+  <p class="foot">Upload a CSV with a date column and a sales column, or drag it onto the page. Everything runs in your browser, so your data stays on your device.</p>
+</div>
+
+<script>
+/* ============ math core ============ */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(!u)u=r();while(!v)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const mean=a=>a.reduce((s,v)=>s+v,0)/a.length;
+const std=a=>{const m=mean(a);return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/Math.max(1,a.length-1))};
+
+function solve(A,b){
+  const n=b.length; const M=A.map((r,i)=>[...r,b[i]]);
+  for(let c=0;c<n;c++){
+    let p=c; for(let r=c+1;r<n;r++) if(Math.abs(M[r][c])>Math.abs(M[p][c])) p=r;
+    [M[c],M[p]]=[M[p],M[c]];
+    const piv=M[c][c]||1e-12;
+    for(let r=c+1;r<n;r++){const f=M[r][c]/piv; if(!f) continue; for(let k=c;k<=n;k++) M[r][k]-=f*M[c][k];}
+  }
+  const x=new Array(n).fill(0);
+  for(let r=n-1;r>=0;r--){let s=M[r][n];for(let k=r+1;k<n;k++) s-=M[r][k]*x[k]; x[r]=s/(M[r][r]||1e-12);}
+  return x;
+}
+function ols(X,y,lambda){
+  lambda=lambda??1e-4; const k=X[0].length;
+  const A=Array.from({length:k},()=>new Array(k).fill(0)), b=new Array(k).fill(0);
+  for(let i=0;i<X.length;i++){const xi=X[i];for(let a=0;a<k;a++){b[a]+=xi[a]*y[i];for(let c=a;c<k;c++)A[a][c]+=xi[a]*xi[c];}}
+  for(let a=0;a<k;a++){for(let c=0;c<a;c++)A[a][c]=A[c][a]; if(a>0) A[a][a]+=lambda*X.length;}
+  return solve(A,b);
+}
+
+/* differencing polynomials */
+function polyMul(a,b){const r=new Array(a.length+b.length-1).fill(0);for(let i=0;i<a.length;i++)for(let j=0;j<b.length;j++)r[i+j]+=a[i]*b[j];return r}
+function diffPoly(d,D,s){let p=[1];for(let i=0;i<d;i++)p=polyMul(p,[1,-1]);if(s>1)for(let i=0;i<D;i++){const q=new Array(s+1).fill(0);q[0]=1;q[s]=-1;p=polyMul(p,q)}return p}
+function applyPoly(y,p){const m=p.length-1,z=[];for(let t=m;t<y.length;t++){let v=0;for(let k=0;k<=m;k++)v+=p[k]*y[t-k];z.push(v)}return z}
+function invertStep(hist,p,zNext){let v=zNext;const n=hist.length;for(let k=1;k<p.length;k++)v-=p[k]*hist[n-k];return v}
+function uniq(a){return [...new Set(a)].sort((x,y)=>x-y)}
+
+/* ---- SARIMA (Hannan–Rinner estimation) ---- */
+function sarimaForecast(y,h,o){
+  const s=o.s>1?o.s:1;
+  const P=s>1?o.P:0, D=s>1?o.D:0, Q=s>1?o.Q:0;
+  const poly=diffPoly(o.d,D,s);
+  const w=applyPoly(y,poly);
+  let ar=[];for(let i=1;i<=o.p;i++)ar.push(i);
+  for(let i=1;i<=P;i++){ar.push(i*s);for(let j=1;j<=o.p;j++)ar.push(i*s+j)}
+  let ma=[];for(let i=1;i<=o.q;i++)ma.push(i);
+  for(let i=1;i<=Q;i++){ma.push(i*s);for(let j=1;j<=o.q;j++)ma.push(i*s+j)}
+  ar=uniq(ar);ma=uniq(ma);
+  const maxAR=ar.length?ar[ar.length-1]:0, maxMA=ma.length?ma[ma.length-1]:0;
+  const e=new Array(w.length).fill(0);
+  let m=0;
+  if(ma.length){
+    m=Math.min(Math.max(maxAR,maxMA)+3,Math.floor(w.length/3));
+    if(m<1) throw new Error('Not enough data for these SARIMA settings. Lower q/Q or use a shorter test period.');
+    const X=[],T=[];
+    for(let t=m;t<w.length;t++){const r=[1];for(let l=1;l<=m;l++)r.push(w[t-l]);X.push(r);T.push(w[t])}
+    const b=ols(X,T,1e-3);
+    for(let t=m;t<w.length;t++){let v=b[0];for(let l=1;l<=m;l++)v+=b[l]*w[t-l];e[t]=w[t]-v}
+  }
+  const start=Math.max(maxAR,maxMA+m);
+  const k=1+ar.length+ma.length;
+  if(w.length-start<k+6) throw new Error('Not enough data for these SARIMA settings. Try lower p/q/P/Q, turn off seasonal differencing, or shorten the test period.');
+  const X=[],T=[];
+  for(let t=start;t<w.length;t++){const r=[1];ar.forEach(l=>r.push(w[t-l]));ma.forEach(l=>r.push(e[t-l]));X.push(r);T.push(w[t])}
+  const beta=ols(X,T,1e-3);
+  const E=e.slice();
+  for(let t=start;t<w.length;t++){let v=beta[0];ar.forEach((l,i)=>v+=beta[1+i]*w[t-l]);ma.forEach((l,i)=>v+=beta[1+ar.length+i]*e[t-l]);E[t]=w[t]-v}
+  const W=w.slice(),Y=y.slice(),out=[];
+  for(let i=0;i<h;i++){
+    const t=W.length;let v=beta[0];
+    ar.forEach((l,j)=>v+=beta[1+j]*W[t-l]);
+    ma.forEach((l,j)=>v+=beta[1+ar.length+j]*(E[t-l]||0));
+    W.push(v);E.push(0);
+    const yv=invertStep(Y,poly,v);Y.push(yv);out.push(yv);
+  }
+  return out;
+}
+
+/* ---- Holt-Winters additive, auto-tuned ---- */
+function hwFit(y,s,a,b,g,seasonal){
+  const n=y.length;
+  if(!seasonal){
+    let L=y[0],T=y[1]-y[0],sse=0;
+    for(let t=1;t<n;t++){const f=L+T,err=y[t]-f;sse+=err*err;const Ln=a*y[t]+(1-a)*(L+T);T=b*(Ln-L)+(1-b)*T;L=Ln}
+    return {sse,f:h=>{const o=[];for(let i=1;i<=h;i++)o.push(L+i*T);return o}};
+  }
+  const m1=mean(y.slice(0,s)),m2=mean(y.slice(s,2*s));
+  let L=m1,T=(m2-m1)/s,sse=0;const S=[];
+  for(let i=0;i<s;i++)S[i]=y[i]-m1;
+  for(let t=s;t<n;t++){
+    const f=L+T+S[t-s],err=y[t]-f;sse+=err*err;
+    const Ln=a*(y[t]-S[t-s])+(1-a)*(L+T);
+    T=b*(Ln-L)+(1-b)*T;S[t]=g*(y[t]-Ln)+(1-g)*S[t-s];L=Ln;
+  }
+  return {sse,f:h=>{const o=[];for(let i=1;i<=h;i++)o.push(L+i*T+S[n-s+((i-1)%s)]);return o}};
+}
+function hwForecast(y,h,o){
+  const seasonal=o.seasonal==='yes'&&o.s>1&&y.length>=2*o.s+2;
+  let best=null;
+  for(const a of [.05,.15,.3,.5,.7,.9])for(const b of [.01,.05,.1,.2,.35])for(const g of (seasonal?[.05,.15,.3,.5,.7]:[0])){
+    const r=hwFit(y,o.s,a,b,g,seasonal);
+    if(isFinite(r.sse)&&(!best||r.sse<best.sse))best=r;
+  }
+  return best.f(h);
+}
+
+/* ---- Trend regression ---- */
+function trForecast(y,h,o){
+  const n=y.length,s=o.s,useS=o.seasonal==='yes'&&s>1&&n>=2*s;
+  const row=t=>{const u=t/n,r=[1,u];if(o.degree==2)r.push(u*u);if(useS)for(let k=1;k<s;k++)r.push(t%s===k?1:0);return r};
+  const X=[],T=[];for(let t=0;t<n;t++){X.push(row(t));T.push(y[t])}
+  const b=ols(X,T,1e-8);const out=[];
+  for(let t=n;t<n+h;t++){const r=row(t);out.push(r.reduce((s2,v,i)=>s2+v*b[i],0))}
+  return out;
+}
+
+/* ---- Seasonal naive ---- */
+function naiveForecast(y,h,o){const s=Math.max(1,Math.min(o.s,y.length));const n=y.length,out=[];for(let i=1;i<=h;i++)out.push(y[n-s+((i-1)%s)]);return out}
+
+/* ---- shared prep for ML models: difference, scale, window ---- */
+function mlPrep(y,s,win){
+  const poly=(s>1&&y.length>=3*s)?diffPoly(0,1,s):diffPoly(1,0,1);
+  const z=applyPoly(y,poly);
+  let L=win>0?win:(s>1?Math.min(s,24):6);
+  L=Math.max(2,Math.min(L,z.length-10));
+  if(z.length-L<8) throw new Error('Not enough data for this model. Use a shorter test period or a smaller window.');
+  const mu=mean(z),sd=std(z)||1;
+  const zs=z.map(v=>(v-mu)/sd);
+  const X=[],T=[];
+  for(let t=L;t<zs.length;t++){X.push(zs.slice(t-L,t));T.push(zs[t])}
+  return {poly,zs,mu,sd,L,X,T};
+}
+async function mlRoll(y,prep,predict,h){
+  const Z=prep.zs.slice(),Y=y.slice(),out=[];
+  for(let i=0;i<h;i++){
+    const pz=await predict(Z.slice(-prep.L));
+    Z.push(pz);
+    const yv=invertStep(Y,prep.poly,pz*prep.sd+prep.mu);
+    Y.push(yv);out.push(yv);
+  }
+  return out;
+}
+
+/* ---- Random forest ---- */
+function buildTree(X,T,idx,depth,o,rng){
+  const vals=idx.map(i=>T[i]),leaf={v:mean(vals)};
+  if(depth>=o.maxDepth||idx.length<2*o.minLeaf)return leaf;
+  const nf=X[0].length,m=Math.max(1,Math.round(nf*o.featFrac));
+  const feats=[...Array(nf).keys()];
+  for(let i=nf-1;i>0;i--){const j=Math.floor(rng()*(i+1));[feats[i],feats[j]]=[feats[j],feats[i]]}
+  let best=null;
+  const tot=vals.reduce((a,b)=>a+b,0),tot2=vals.reduce((a,b)=>a+b*b,0),N=idx.length;
+  for(const f of feats.slice(0,m)){
+    const ord=idx.slice().sort((a,b)=>X[a][f]-X[b][f]);
+    let sl=0,sl2=0;
+    for(let k=0;k<N-1;k++){
+      const v=T[ord[k]];sl+=v;sl2+=v*v;
+      const nl=k+1,nr=N-nl;
+      if(nl<o.minLeaf||nr<o.minLeaf)continue;
+      if(X[ord[k]][f]===X[ord[k+1]][f])continue;
+      const sr=tot-sl,sr2=tot2-sl2;
+      const sse=(sl2-sl*sl/nl)+(sr2-sr*sr/nr);
+      if(!best||sse<best.sse)best={sse,f,thr:(X[ord[k]][f]+X[ord[k+1]][f])/2};
+    }
+  }
+  if(!best)return leaf;
+  const li=idx.filter(i=>X[i][best.f]<=best.thr),ri=idx.filter(i=>X[i][best.f]>best.thr);
+  return {f:best.f,thr:best.thr,l:buildTree(X,T,li,depth+1,o,rng),r:buildTree(X,T,ri,depth+1,o,rng)};
+}
+function treePred(t,x){while(t.f!==undefined)t=x[t.f]<=t.thr?t.l:t.r;return t.v}
+async function rfForecast(y,h,o){
+  const prep=mlPrep(y,o.s,o.window);
+  const rng=mulberry32(42),trees=[],n=prep.X.length;
+  const opt={maxDepth:o.depth,minLeaf:2,featFrac:.6};
+  for(let k=0;k<o.trees;k++){
+    const idx=[];for(let i=0;i<n;i++)idx.push(Math.floor(rng()*n));
+    trees.push(buildTree(prep.X,prep.T,idx,0,opt,rng));
+    if(k%20===19)await new Promise(r=>setTimeout(r,0));
+  }
+  return mlRoll(y,prep,x=>trees.reduce((s,t)=>s+treePred(t,x),0)/trees.length,h);
+}
+</script>
+
+<script>
+/* ============ neural models ============ */
+const hasTF=()=>typeof tf!=='undefined';
+async function nnForecast(y,h,o,onEpoch){
+  if(!hasTF())throw new Error('AI library did not load. Reload the page.');
+  const prep=mlPrep(y,o.s,o.window);
+  const model=tf.sequential();
+  model.add(tf.layers.dense({units:o.units,activation:'relu',inputShape:[prep.L]}));
+  model.add(tf.layers.dense({units:Math.max(4,o.units>>1),activation:'relu'}));
+  model.add(tf.layers.dense({units:1}));
+  model.compile({optimizer:tf.train.adam(0.005),loss:'meanSquaredError'});
+  const xs=tf.tensor2d(prep.X),ys=tf.tensor2d(prep.T,[prep.T.length,1]);
+  await model.fit(xs,ys,{epochs:o.epochs,batchSize:16,shuffle:true,verbose:0,callbacks:{onEpochEnd:async e=>{if(e%10===0){onEpoch&&onEpoch(e+1,o.epochs);await tf.nextFrame()}}}});
+  xs.dispose();ys.dispose();
+  const out=await mlRoll(y,prep,x=>tf.tidy(()=>model.predict(tf.tensor2d([x])).dataSync()[0]),h);
+  model.dispose();return out;
+}
+async function lstmForecast(y,h,o,onEpoch){
+  if(!hasTF())throw new Error('AI library did not load. Reload the page.');
+  const prep=mlPrep(y,o.s,o.window);
+  const model=tf.sequential();
+  model.add(tf.layers.lstm({units:o.units,inputShape:[prep.L,1]}));
+  model.add(tf.layers.dense({units:1}));
+  model.compile({optimizer:tf.train.adam(0.015),loss:'meanSquaredError'});
+  const xs=tf.tensor3d(prep.X.map(r=>r.map(v=>[v]))),ys=tf.tensor2d(prep.T,[prep.T.length,1]);
+  await model.fit(xs,ys,{epochs:o.epochs,batchSize:16,shuffle:true,verbose:0,callbacks:{onEpochEnd:async e=>{if(e%5===0){onEpoch&&onEpoch(e+1,o.epochs);await tf.nextFrame()}}}});
+  xs.dispose();ys.dispose();
+  const out=await mlRoll(y,prep,x=>tf.tidy(()=>model.predict(tf.tensor3d([x.map(v=>[v])])).dataSync()[0]),h);
+  model.dispose();return out;
+}
+
+/* ============ registry ============ */
+const winParam={id:'window',label:'Look-back window (0 = auto)',type:'number',min:0,max:60,step:1,def:0};
+const MODELS={
+  sarima:{name:'SARIMA',desc:'Statistical model for seasonal sales',color:'--m1',run:sarimaForecast,params:[
+    {id:'p',label:'p (past values)',type:'number',min:0,max:3,step:1,def:1},
+    {id:'d',label:'d (trend removal)',type:'number',min:0,max:2,step:1,def:1},
+    {id:'q',label:'q (past errors)',type:'number',min:0,max:3,step:1,def:1},
+    {id:'P',label:'P (seasonal values)',type:'number',min:0,max:2,step:1,def:0},
+    {id:'D',label:'D (season removal)',type:'number',min:0,max:1,step:1,def:1},
+    {id:'Q',label:'Q (seasonal errors)',type:'number',min:0,max:2,step:1,def:1}]},
+  hw:{name:'Holt-Winters',desc:'Smooths level, trend and season',color:'--m3',run:hwForecast,params:[
+    {id:'seasonal',label:'Seasonal pattern',type:'select',options:[['yes','Include'],['no','Ignore']],def:'yes'}]},
+  tr:{name:'Trend Regression',desc:'Trend line plus a fixed season',color:'--m2',run:trForecast,params:[
+    {id:'degree',label:'Trend shape',type:'select',options:[['1','Straight'],['2','Curved']],def:'1'},
+    {id:'seasonal',label:'Seasonal pattern',type:'select',options:[['yes','Include'],['no','Ignore']],def:'yes'}]},
+  rf:{name:'Random Forest',desc:'Many decision trees voting',color:'--m4',run:rfForecast,params:[
+    {id:'trees',label:'Number of trees',type:'number',min:10,max:300,step:10,def:100},
+    {id:'depth',label:'Max tree depth',type:'number',min:2,max:14,step:1,def:6},winParam]},
+  nn:{name:'Neural Network',desc:'AI model, trains in a few seconds',color:'--m5',ai:true,run:nnForecast,params:[
+    {id:'units',label:'Hidden units',type:'number',min:4,max:128,step:4,def:32},
+    {id:'epochs',label:'Training rounds',type:'number',min:20,max:600,step:10,def:200},winParam]},
+  lstm:{name:'LSTM',desc:'AI model for sequences, slowest',color:'--m6',ai:true,run:lstmForecast,params:[
+    {id:'units',label:'Memory units',type:'number',min:4,max:64,step:4,def:20},
+    {id:'epochs',label:'Training rounds',type:'number',min:10,max:300,step:10,def:50},winParam]},
+  naive:{name:'Seasonal Naive',desc:'Baseline: repeats last season',color:'--m7',run:naiveForecast,params:[]}
+};
+const ORDER=['sarima','hw','tr','rf','nn','lstm','naive'];
+
+/* ============ data ============ */
+const AIR=[112,118,132,129,121,135,148,148,136,119,104,118,115,126,141,135,125,149,170,170,158,133,114,140,145,150,178,163,172,178,199,199,184,162,146,166,171,180,193,181,183,218,230,242,209,191,172,194,196,196,236,235,229,243,264,272,237,211,180,201,204,188,235,227,234,264,302,293,259,229,203,229,242,233,267,269,270,315,364,347,312,274,237,278,284,277,317,313,318,374,413,405,355,306,271,306,315,301,356,348,355,422,465,467,404,347,305,336,340,318,362,348,363,435,491,505,404,359,310,337,360,342,406,396,420,472,548,559,463,407,362,405,417,391,419,461,472,535,622,606,508,461,390,432];
+const monthly=(y,m,n)=>Array.from({length:n},(_,i)=>new Date(Date.UTC(y,m+i,1)));
+const DATASETS={
+  store:{name:'Store sales, monthly (sample)',cur:'$',log:false,build(){
+    const r=mulberry32(7),n=96,v=[];
+    for(let i=0;i<n;i++){const mo=(i+9)%12;v.push(Math.round((20000+i*160+2600*Math.sin(2*Math.PI*(mo-2)/12)+(mo===10?3500:0)+(mo===11?7200:0)+gauss(r)*700)))}
+    return {dates:monthly(2018,9,n),values:v}}},
+  online:{name:'Online orders, daily (sample)',cur:'$',log:false,build(){
+    const r=mulberry32(11),n=182,d=[],v=[];
+    for(let i=0;i<n;i++){const dt=new Date(Date.UTC(2026,2,1+i));d.push(dt);const dow=dt.getUTCDay();
+      v.push(Math.round(5200+9*i+(dow===0?900:dow===6?1300:dow===2?-500:0)+300*Math.cos(2*Math.PI*i/120)+gauss(r)*180))}
+    return {dates:d,values:v}}},
+  airline:{name:'Airline tickets, monthly (classic dataset)',cur:'',log:true,build(){return {dates:monthly(1949,0,144),values:AIR.slice()}}}
+};
+
+/* ============ state ============ */
+const S={dates:[],values:[],freq:null,name:'',H:12,test:12,season:12,log:false,model:'auto',cur:'$',ai:false,showAll:false,
+  params:{},results:{},running:{},runId:0,loaded:''};
+ORDER.forEach(k=>{S.params[k]={};MODELS[k].params.forEach(p=>S.params[k][p.id]=p.def)});
+const $=s=>document.querySelector(s);
+const DAY=864e5;
+const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const WDAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+function detectFreq(dates){
+  if(dates.length<3)return {kind:'index',season:1,word:'period'};
+  const diffs=[];for(let i=1;i<dates.length;i++)diffs.push((dates[i]-dates[i-1])/DAY);
+  diffs.sort((a,b)=>a-b);const d=diffs[Math.floor(diffs.length/2)];
+  if(Math.abs(d-1)<.1)return {kind:'daily',step:DAY,season:7,word:'day',chips:[7,14,30,60]};
+  if(Math.abs(d-7)<.5)return {kind:'weekly',step:7*DAY,season:52,word:'week',chips:[4,8,13,26]};
+  if(d>=27&&d<=32)return {kind:'monthly',months:1,season:12,word:'month',chips:[3,6,12,24]};
+  if(d>=88&&d<=93)return {kind:'quarterly',months:3,season:4,word:'quarter',chips:[2,4,8]};
+  if(d>=360&&d<=370)return {kind:'yearly',months:12,season:1,word:'year',chips:[1,3,5]};
+  return {kind:'custom',step:d*DAY,season:1,word:'period',chips:[5,10,20]};
+}
+const words=(n,f)=>n+' '+(f||S.freq).word+(n===1?'':'s');
+function futureDates(last,f,h){const o=[];for(let i=1;i<=h;i++){if(f.kind==='index')o.push(last+i);else if(f.months)o.push(new Date(Date.UTC(last.getUTCFullYear(),last.getUTCMonth()+f.months*i,last.getUTCDate())));else o.push(new Date(last.getTime()+f.step*i))}return o}
+function fmtDate(d,short){
+  const f=S.freq;if(f.kind==='index')return '#'+d;
+  const o={timeZone:'UTC'};
+  if(f.kind==='monthly'||f.kind==='quarterly')Object.assign(o,{month:'short',year:short?'2-digit':'numeric'});
+  else if(f.kind==='yearly')o.year='numeric';
+  else Object.assign(o,{day:'numeric',month:'short'},short?{}:{year:'numeric'});
+  return d.toLocaleDateString('en-GB',o);
+}
+function num(v,dp){if(v==null||!isFinite(v))return '–';const a=Math.abs(v);dp=dp??(a>=1000?0:a>=100?1:2);return v.toLocaleString('en-US',{maximumFractionDigits:dp})}
+function money(v){if(v==null||!isFinite(v))return '–';return (v<0?'-':'')+S.cur+num(Math.abs(v))}
+function moneyShort(v){if(v==null||!isFinite(v))return '–';return (v<0?'-':'')+S.cur+Math.abs(v).toLocaleString('en-US',{notation:'compact',maximumFractionDigits:Math.abs(v)>=1000?1:0})}
+function pct(v,dp=1){return (v>0?'+':'')+v.toFixed(dp)+'%'}
+const cssVar=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function parseCSV(text){
+  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim());
+  const rows=[];
+  for(const line of lines){
+    const cells=line.split(/[,;\t]/).map(c=>c.trim().replace(/^"|"$/g,''));
+    if(cells.length<2)continue;
+    let vi=cells.findIndex((c,i)=>i>0&&c!==''&&isFinite(parseFloat(c.replace(/[^0-9eE.+-]/g,''))));
+    if(vi<0)continue;
+    const val=parseFloat(cells[vi].replace(/[^0-9eE.+-]/g,''));
+    let raw=cells[0],d=null;
+    if(/^\d{4}-\d{2}$/.test(raw))raw+='-01';
+    if(/^\d{4}-\d{2}-\d{2}/.test(raw))d=new Date(raw.slice(0,10)+'T00:00:00Z');
+    else if(!/^\d+(\.\d+)?$/.test(raw)){const t=new Date(raw);if(!isNaN(t))d=new Date(Date.UTC(t.getFullYear(),t.getMonth(),t.getDate()))}
+    rows.push({d:d&&!isNaN(d)?d:null,v:val});
+  }
+  if(rows.length<24)throw new Error(`The file needs at least 24 rows with a date and a sales number. Found ${rows.length}.`);
+  const dated=rows.every(r=>r.d);
+  if(dated){
+    rows.sort((a,b)=>a.d-b.d);
+    const merged=[];rows.forEach(r=>{const last=merged[merged.length-1];if(last&&+last.d===+r.d)last.v+=r.v;else merged.push({...r})});
+    return {dates:merged.map(r=>r.d),values:merged.map(r=>r.v),dated};
+  }
+  return {dates:rows.map((_,i)=>i+1),values:rows.map(r=>r.v),dated};
+}
+
+/* ============ controls ============ */
+function buildDataSel(){
+  const sel=$('#dataSel');sel.innerHTML='';
+  Object.entries(DATASETS).forEach(([k,d])=>sel.add(new Option(d.name,k)));
+  sel.add(new Option('Upload your own file…','__upload'));
+  sel.addEventListener('change',()=>{
+    if(sel.value==='__upload'){sel.value=S.loaded;$('#fileInput').click();return}
+    if(sel.value==='custom')return;
+    loadDataset(sel.value);
+  });
+}
+function buildModelSel(){
+  const sel=$('#modelSel');const cur=S.model;sel.innerHTML='';
+  sel.add(new Option('Auto: pick the most accurate','auto'));
+  ORDER.forEach(k=>sel.add(new Option(MODELS[k].name+(MODELS[k].ai?' (AI)':''),k)));
+  sel.value=cur;
+}
+$('#modelSel').addEventListener('change',e=>{S.model=e.target.value;buildParams();ensureRun()});
+$('#curSel').addEventListener('change',e=>{S.cur=e.target.value;renderAll()});
+$('#allIn').addEventListener('change',e=>{S.showAll=e.target.checked;renderChart()});
+$('#aiIn').addEventListener('change',e=>{S.ai=e.target.checked;ensureRun()});
+$('#settingsBtn').addEventListener('click',e=>{const d=$('#drawer');const o=!d.classList.contains('open');d.classList.toggle('open',o);e.currentTarget.setAttribute('aria-expanded',o)});
+$('#uploadBtn').addEventListener('click',()=>$('#fileInput').click());
+function numInput(el,min,max,apply){el.addEventListener('change',()=>{const v=Math.round(Math.min(max(),Math.max(min,+el.value||min)));el.value=v;apply(v);invalidate();ensureRun()})}
+numInput($('#testIn'),3,()=>Math.max(3,Math.floor(S.values.length*.35)),v=>S.test=v);
+numInput($('#seasonIn'),1,()=>Math.max(1,Math.floor(S.values.length/3)),v=>{S.season=v;renderSeason()});
+$('#logIn').addEventListener('change',e=>{S.log=e.target.checked;invalidate();ensureRun()});
+
+function buildHorizon(){
+  const f=S.freq,box=$('#horizonSeg');box.innerHTML='';
+  const max=Math.max(2,Math.floor(S.values.length*.5));
+  let chips=(f.chips||[5,10,20]).filter(c=>c<=max);if(!chips.length)chips=[Math.min(5,max)];
+  if(!chips.includes(S.H))S.H=chips.includes(f.season)?f.season:chips[Math.min(1,chips.length-1)];
+  chips.forEach(c=>{const b=document.createElement('button');b.type='button';b.textContent=c+' '+f.word+(c===1?'':'s');
+    b.setAttribute('aria-pressed',c===S.H);
+    b.addEventListener('click',()=>{S.H=c;buildHorizon();invalidate();ensureRun()});box.appendChild(b)});
+}
+function buildParams(){
+  const key=S.model==='auto'?bestKey():S.model;
+  const box=$('#paramBox');box.innerHTML='';
+  if(!key){$('#paramTitle').textContent='Model settings';box.innerHTML='<p class="hint">Settings appear once a model is chosen.</p>';return}
+  const m=MODELS[key];
+  $('#paramTitle').textContent=`${m.name} settings`+(S.model==='auto'?' (current Auto pick)':'');
+  if(!m.params.length){box.innerHTML='<p class="hint">This model has no settings.</p>';return}
+  m.params.forEach(p=>{
+    const lab=document.createElement('label');lab.className='ctl';
+    const id='pp_'+p.id;
+    lab.innerHTML=`<span>${p.label}</span>`+(p.type==='select'
+      ?`<select id="${id}">${p.options.map(([v,l])=>`<option value="${v}"${String(S.params[key][p.id])===v?' selected':''}>${l}</option>`).join('')}</select>`
+      :`<input type="number" id="${id}" min="${p.min}" max="${p.max}" step="${p.step}" value="${S.params[key][p.id]}">`);
+    box.appendChild(lab);
+    lab.querySelector('#'+id).addEventListener('change',e=>{
+      let v=e.target.value;if(p.type==='number'){v=Math.round(Math.min(p.max,Math.max(p.min,+v||0)));e.target.value=v}
+      S.params[key][p.id]=v;delete S.results[key];ensureRun();
+    });
+  });
+}
+
+function loadDataset(key){const d=DATASETS[key],b=d.build();S.loaded=key;$('#dataSel').value=key;setData(b.dates,b.values,d.name,d.cur,d.log,true)}
+function setData(dates,values,name,cur,logDef,dated){
+  S.dates=dates;S.values=values;S.name=name;
+  S.freq=dated?detectFreq(dates):{kind:'index',season:1,word:'period',chips:[5,10,20]};
+  const n=values.length,s=S.freq.season;
+  S.season=s>1&&n>=2*s+6?s:1;
+  S.test=S.season>=12?S.season:Math.min(Math.max(S.season*2,Math.round(n*.1)),Math.floor(n*.3));
+  S.test=Math.max(3,S.test);
+  const canLog=values.every(v=>v>0);
+  S.log=canLog&&logDef;
+  $('#logIn').checked=S.log;$('#logIn').disabled=!canLog;$('#logWrap').classList.toggle('disabled',!canLog);
+  $('#testIn').value=S.test;$('#seasonIn').value=S.season;
+  if(cur!==undefined){S.cur=cur;$('#curSel').value=cur}
+  $('#subtitle').textContent=`${name}: ${n} ${S.freq.word}s of history`;
+  const k={daily:'Tomorrow',weekly:'Next week',monthly:'Next month',quarterly:'Next quarter',yearly:'Next year'}[S.freq.kind]||'Next period';
+  $('#k1l').textContent=k;S.nextWord=k;
+  S.H=0;buildHorizon();
+  invalidate();renderSeason();ensureRun();
+}
+
+/* ============ running ============ */
+function invalidate(){S.results={};S.runId++;S.running={}}
+function metrics(a,p){let ae=0,se=0,pe=0,pc=0;for(let i=0;i<a.length;i++){const e=a[i]-p[i];ae+=Math.abs(e);se+=e*e;if(a[i]!==0){pe+=Math.abs(e/a[i]);pc++}}return {mae:ae/a.length,rmse:Math.sqrt(se/a.length),mape:pc?100*pe/pc:NaN}}
+function grade(m){if(!isFinite(m))return {cls:'idle',txt:'Unrated'};if(m<5)return {cls:'good',txt:'Excellent'};if(m<10)return {cls:'good',txt:'Good'};if(m<20)return {cls:'ok',txt:'Fair'};return {cls:'bad',txt:'Weak'}}
+const tick=()=>new Promise(r=>setTimeout(r,15));
+
+async function runOne(key,id){
+  const y=S.values,n=y.length,H=S.H,NT=S.test,log=S.log;
+  if(n-NT<12)throw new Error('Testing period is too long for this much data.');
+  const tr=log?y.map(Math.log):y.slice(),back=a=>log?a.map(Math.exp):a;
+  const cfg={...S.params[key],s:S.season};cfg.degree=+cfg.degree||1;
+  const m=MODELS[key],t0=performance.now();
+  const prog=(phase)=>(e,tot)=>{if(id===S.runId){S.running[key]=`${phase} ${Math.round(100*e/tot)}%`;renderModels()}};
+  const tp=back(await m.run(tr.slice(0,n-NT),NT,cfg,prog('Testing')));
+  if(id!==S.runId)return null;
+  await tick();
+  const fut=back(await m.run(tr,H,cfg,prog('Forecasting')));
+  if(![...tp,...fut].every(isFinite))throw new Error('Produced invalid numbers with these settings.');
+  const met=metrics(y.slice(n-NT),tp),hb=(NT+1)/2;
+  return {key,tp,fut,...met,H,NT,secs:(performance.now()-t0)/1000,
+    lo:fut.map((v,i)=>v-1.96*met.rmse*Math.sqrt((i+1)/hb)),hi:fut.map((v,i)=>v+1.96*met.rmse*Math.sqrt((i+1)/hb)),
+    fd:futureDates(S.dates[n-1],S.freq,H)};
+}
+function wanted(){
+  const ks=ORDER.filter(k=>!MODELS[k].ai||S.ai);
+  if(S.model!=='auto'&&!ks.includes(S.model))ks.push(S.model);
+  return ks;
+}
+let loopActive=false;
+async function ensureRun(){
+  renderAll();
+  if(loopActive)return;
+  loopActive=true;
+  try{
+    while(true){
+      const id=S.runId;
+      const k=wanted().find(k=>!S.results[k]);
+      if(!k)break;
+      setStatus(true,`Running ${MODELS[k].name}…`);
+      S.running[k]='Running';renderModels();await tick();
+      let r;
+      try{r=await runOne(k,id)}catch(err){r={key:k,error:err.message||String(err)}}
+      if(id!==S.runId)continue;
+      delete S.running[k];S.results[k]=r;
+      renderAll();
+    }
+  }finally{loopActive=false;setStatus(false)}
+}
+function setStatus(busy,txt){$('#status').classList.toggle('busy',busy);$('#statusText').textContent=busy?txt:'Up to date'}
+function okResults(){return ORDER.map(k=>S.results[k]).filter(r=>r&&!r.error)}
+function bestKey(){const r=okResults().filter(r=>!MODELS[r.key].ai||S.ai).sort((a,b)=>a.rmse-b.rmse);return r.length?r[0].key:null}
+function currentKey(){return S.model==='auto'?bestKey():S.model}
+function current(){const k=currentKey();const r=k&&S.results[k];return r&&!r.error?r:null}
+
+/* ============ rendering ============ */
+function showAlert(t){const a=$('#alert');a.textContent=t||'';a.classList.toggle('show',!!t)}
+function renderAll(){
+  const k=currentKey(),r=k&&S.results[k];
+  showAlert(r&&r.error?`${MODELS[k].name} could not run: ${r.error} Try another model or adjust Settings.`:'');
+  renderKPIs();renderModels();renderChart();renderTable();renderInsights();
+  const pt=$('#paramTitle').textContent;if(S.model==='auto'&&k&&!pt.startsWith(MODELS[k].name))buildParams();
+}
+function renderKPIs(){
+  const r=current(),y=S.values,n=y.length;
+  if(!r){['k1','k2','k3','k4'].forEach(i=>$('#'+i).textContent='–');['k1s','k2s','k3s','k4s'].forEach(i=>$('#'+i).innerHTML='Calculating…');return}
+  $('#k1').textContent=money(r.fut[0]);$('#k1l').textContent=`${S.nextWord}, ${fmtDate(r.fd[0])}`;
+  const prevSame=S.season>1&&n>=S.season?y[n-S.season]:y[n-1];
+  const ch=(r.fut[0]-prevSame)/Math.abs(prevSame)*100;
+  $('#k1s').innerHTML=`<span class="pill ${ch>=0?'up':'down'}">${pct(ch)}</span> vs ${S.season>1?'same time last cycle':'last period'}`;
+  const tot=r.fut.reduce((a,b)=>a+b,0);
+  $('#k2l').textContent=`Total, next ${words(r.H)}`;
+  $('#k2').textContent=moneyShort(tot);
+  $('#k2s').textContent=`${fmtDate(r.fd[0],1)} to ${fmtDate(r.fd[r.H-1],1)}`;
+  const prevTot=y.slice(Math.max(0,n-r.H)).reduce((a,b)=>a+b,0)*(r.H/Math.min(r.H,n));
+  const g=(tot-prevTot)/Math.abs(prevTot)*100;
+  $('#k3').innerHTML=`<span class="${g>=0?'up':'down'}">${pct(g)}</span>`;
+  $('#k3s').textContent=`vs the last ${words(r.H)} (${moneyShort(prevTot)})`;
+  const gr=grade(r.mape);
+  $('#k4').textContent=isFinite(r.mape)?(100-r.mape).toFixed(1)+'%':'–';
+  $('#k4s').innerHTML=`<span class="badge ${gr.cls}">${gr.txt}</span> using ${MODELS[r.key].name}`;
+}
+function renderModels(){
+  const best=bestKey(),cur=currentKey(),box=$('#mlist');
+  const rows=ORDER.slice().sort((a,b)=>{const ra=S.results[a],rb=S.results[b];const va=ra&&!ra.error?ra.rmse:Infinity,vb=rb&&!rb.error?rb.rmse:Infinity;return va-vb});
+  box.innerHTML='';
+  rows.forEach(k=>{
+    const m=MODELS[k],r=S.results[k],run=S.running[k];
+    const b=document.createElement('button');b.type='button';b.className='mrow'+(k===cur?' active':'');
+    let score='',sub=m.desc,bar=0;
+    if(run){score='…';sub=run==='Running'?'Running…':run}
+    else if(r&&r.error){score='–';sub='Could not run with these settings'}
+    else if(r){const acc=isFinite(r.mape)?100-r.mape:NaN;score=isFinite(acc)?acc.toFixed(1)+'%':num(r.rmse);bar=isFinite(acc)?Math.max(4,Math.min(100,(acc-50)*2)):50;sub=`<span class="badge ${grade(r.mape).cls}">${grade(r.mape).txt}</span>`}
+    else if(m.ai){score='Tap to run';sub=m.desc}
+    else {score='…'}
+    const tags=(k===best?'<span class="tag">Most accurate</span>':'')+(k===cur?'<span class="tag use">In use</span>':'');
+    b.innerHTML=`<span class="sw" style="background:var(${m.color})"></span><span class="mname">${m.name}${tags}</span><span class="mscore${score==='Tap to run'?' run':''}">${score}</span>
+      <span class="mbar"><b style="width:${bar}%;background:var(${m.color})"></b></span><span class="msub">${sub}</span>`;
+    b.addEventListener('click',()=>{S.model=k;$('#modelSel').value=k;buildParams();ensureRun()});
+    box.appendChild(b);
+  });
+}
+
+let chart=null,sChart=null;
+const zonePlugin={id:'zones',beforeDatasetsDraw(c,_,o){
+  const z=o.zones;if(!z)return;const {ctx,chartArea:a,scales:{x}}=c;ctx.save();
+  const x0=x.getPixelForValue(z.t0),x1=x.getPixelForValue(z.t1);
+  ctx.fillStyle=cssVar('--zone');ctx.fillRect(x0,a.top,x1-x0,a.bottom-a.top);
+  ctx.font='600 11px '+cssVar('--font');ctx.fillStyle=cssVar('--test');ctx.fillText('Test',x0+5,a.top+14);
+  ctx.strokeStyle=cssVar('--ink-3');ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(x1,a.top);ctx.lineTo(x1,a.bottom);ctx.stroke();
+  ctx.setLineDash([]);ctx.fillStyle=cssVar('--accent');ctx.fillText('Forecast',x1+5,a.top+14);ctx.restore();
+}};
+function renderChart(){
+  if(typeof Chart==='undefined'){showAlert('Chart library did not load. Reload the page.');return}
+  const r=current(),y=S.values,n=y.length,f=S.freq;
+  const H=r?r.H:0;
+  const labels=[...S.dates.map(d=>fmtDate(d)),...(r?r.fd.map(d=>fmtDate(d)):[])];
+  const L=labels.length,pad=(arr,from)=>{const a=new Array(L).fill(null);arr.forEach((v,i)=>a[from+i]=v);return a};
+  const ink=cssVar('--actual'),acc=cssVar('--accent'),tst=cssVar('--test'),grid=cssVar('--line'),tk=cssVar('--ink-3');
+  const ds=[{label:'Actual sales',data:pad(y,0),borderColor:ink,backgroundColor:cssVar('--actual-fill'),fill:'start',borderWidth:2,pointRadius:0,tension:.25,order:1}];
+  const lg=[`<span><i style="background:${ink}"></i>Actual</span>`];
+  const last=y[n-1];
+  if(r&&!S.showAll){
+    ds.push({label:'Low',data:pad([last,...r.lo],n-1),borderColor:'transparent',pointRadius:0,order:5});
+    ds.push({label:'High',data:pad([last,...r.hi],n-1),borderColor:'transparent',backgroundColor:cssVar('--band'),fill:'-1',pointRadius:0,order:5});
+    ds.push({label:'Test prediction',data:pad(r.tp,n-r.NT),borderColor:tst,borderDash:[6,4],borderWidth:2.5,pointRadius:0,tension:.25,order:2});
+    ds.push({label:'Forecast',data:pad([last,...r.fut],n-1),borderColor:acc,backgroundColor:acc,borderWidth:3,pointRadius:H<=36?3:0,pointBackgroundColor:cssVar('--panel'),pointBorderWidth:2,tension:.25,order:0});
+    lg.push(`<span><i class="dash"></i>Test prediction</span><span><i style="background:${acc}"></i>Forecast</span><span><i class="area"></i>Likely range</span>`);
+  }
+  if(r&&S.showAll){
+    okResults().filter(x=>x.H===H).forEach(x=>{const c=cssVar(MODELS[x.key].color);const me=x.key===r.key;
+      ds.push({label:MODELS[x.key].name,data:pad([last,...x.fut],n-1),borderColor:c,backgroundColor:c,borderWidth:me?3:1.5,pointRadius:0,tension:.15,order:me?0:3});
+      lg.push(`<span><i style="background:${c}"></i>${MODELS[x.key].name}</span>`)});
+  }
+  $('#legend').innerHTML=lg.join('');
+  $('#chartTitle').textContent=r?`Sales forecast with ${MODELS[r.key].name}`:'Sales history';
+  $('#chartSub').textContent=r?`Next ${words(H)}, tested on the last ${words(r.NT)}`:'Calculating forecast…';
+  const cfg={type:'line',data:{labels,datasets:ds},plugins:[zonePlugin],options:{
+    responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:'index',intersect:false},
+    plugins:{legend:{display:false},zones:{zones:r?{t0:labels[n-r.NT],t1:labels[n-1]}:null},
+      tooltip:{backgroundColor:cssVar('--panel'),titleColor:cssVar('--ink'),bodyColor:cssVar('--ink-2'),borderColor:grid,borderWidth:1,padding:10,
+        filter:it=>it.raw!=null&&!(it.dataIndex===n-1&&it.datasetIndex>0),
+        callbacks:{label:it=>` ${it.dataset.label==='Low'?'Likely low':it.dataset.label==='High'?'Likely high':it.dataset.label}: ${money(it.raw)}`}}},
+    scales:{x:{grid:{display:false},ticks:{color:tk,maxRotation:0,autoSkip:true,maxTicksLimit:9},border:{color:grid}},
+      y:{grid:{color:grid},border:{display:false},ticks:{color:tk,callback:v=>moneyShort(v)}}}}};
+  if(chart){chart.data=cfg.data;chart.options=cfg.options;chart.update()}else chart=new Chart($('#chart'),cfg);
+}
+function renderTable(){
+  const r=current(),box=$('#tableBox');
+  if(!r){box.innerHTML='<div class="empty">Calculating forecast…</div>';return}
+  const y=S.values,n=y.length,s=S.season;
+  const all=[...y,...r.fut];
+  const rows=r.fut.map((v,i)=>{
+    const ref=s>1?all[n+i-s]:all[n+i-1];const c=(v-ref)/Math.abs(ref)*100;
+    return `<tr><td>${fmtDate(r.fd[i])}</td><td class="fc">${money(v)}</td><td>${money(r.lo[i])}</td><td>${money(r.hi[i])}</td><td class="${c>=0?'up':'down'}">${pct(c)}</td></tr>`}).join('');
+  const tot=r.fut.reduce((a,b)=>a+b,0);
+  box.innerHTML=`<table><thead><tr><th>Period</th><th>Forecast</th><th>Likely low</th><th>Likely high</th><th>${s>1?'vs last cycle':'vs previous'}</th></tr></thead>
+    <tbody>${rows}<tr class="total"><td>Total</td><td>${money(tot)}</td><td></td><td></td><td></td></tr></tbody></table>`;
+}
+function seasonLabel(i,s){
+  const f=S.freq,d=S.dates[i];
+  if(f.kind==='monthly'&&s===12)return {key:d.getUTCMonth(),label:MONTHS[d.getUTCMonth()],order:d.getUTCMonth()};
+  if(f.kind==='daily'&&s===7){const w=d.getUTCDay();return {key:w,label:WDAYS[w],order:(w+6)%7}}
+  if(f.kind==='quarterly'&&s===4){const q=Math.floor(d.getUTCMonth()/3);return {key:q,label:'Q'+(q+1),order:q}}
+  return {key:i%s,label:'P'+(i%s+1),order:i%s};
+}
+function renderSeason(){
+  const s=S.season,y=S.values,n=y.length;
+  if(typeof Chart==='undefined')return;
+  const note=$('#seasonNote');
+  if(s<2||n<2*s){if(sChart){sChart.destroy();sChart=null}note.textContent='No repeating pattern set. Change the season length in Settings to see one.';$('#seasonSub').textContent='';return}
+  const pos=Array.from({length:n},(_,i)=>seasonLabel(i,s));
+  const sums={},cnt={},meta={};
+  const positive=y.every(v=>v>0);
+  for(let c=0;c+s<=n;c+=s){
+    const m=mean(y.slice(c,c+s));
+    for(let i=c;i<c+s;i++){const p=pos[i];const v=positive?(y[i]/m-1)*100:y[i]-m;sums[p.key]=(sums[p.key]||0)+v;cnt[p.key]=(cnt[p.key]||0)+1;meta[p.key]=p}
+  }
+  const keys=Object.keys(meta).sort((a,b)=>meta[a].order-meta[b].order);
+  const vals=keys.map(k=>sums[k]/cnt[k]);
+  const hi=vals.indexOf(Math.max(...vals)),lo=vals.indexOf(Math.min(...vals));
+  $('#seasonSub').textContent=positive?'% above or below a typical period.':'Difference from a typical period.';
+  const fmt=v=>positive?pct(v,0):money(v);
+  note.innerHTML=`Busiest: <b>${meta[keys[hi]].label}</b> (${fmt(vals[hi])}). Quietest: <b>${meta[keys[lo]].label}</b> (${fmt(vals[lo])}).`;
+  const acc=cssVar('--accent'),tst=cssVar('--test'),grid=cssVar('--line'),tk=cssVar('--ink-3');
+  const cfg={type:'bar',data:{labels:keys.map(k=>meta[k].label),datasets:[{data:vals,backgroundColor:vals.map(v=>v>=0?acc:tst),borderRadius:6,borderSkipped:false}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:false},
+      tooltip:{backgroundColor:cssVar('--panel'),titleColor:cssVar('--ink'),bodyColor:cssVar('--ink-2'),borderColor:grid,borderWidth:1,callbacks:{label:it=>' '+fmt(it.raw)}}},
+      scales:{x:{grid:{display:false},ticks:{color:tk,autoSkip:false,maxRotation:0,font:{size:10}},border:{color:grid}},
+        y:{grid:{color:grid},border:{display:false},ticks:{color:tk,callback:v=>positive?v+'%':moneyShort(v),maxTicksLimit:5}}}}};
+  if(sChart){sChart.data=cfg.data;sChart.options=cfg.options;sChart.update()}else sChart=new Chart($('#seasonChart'),cfg);
+}
+function renderInsights(){
+  const r=current(),ul=$('#insights');
+  if(!r){ul.innerHTML='<li>Working out the forecast…</li>';return}
+  const y=S.values,n=y.length,tot=r.fut.reduce((a,b)=>a+b,0);
+  const prevTot=y.slice(Math.max(0,n-r.H)).reduce((a,b)=>a+b,0)*(r.H/Math.min(r.H,n));
+  const g=(tot-prevTot)/Math.abs(prevTot)*100;
+  const pk=r.fut.indexOf(Math.max(...r.fut)),lw=r.fut.indexOf(Math.min(...r.fut));
+  const items=[];
+  items.push(`<li class="hl">Sales are expected to <b>${Math.abs(g)<1?'hold steady':(g>0?'grow '+g.toFixed(1)+'%':'drop '+Math.abs(g).toFixed(1)+'%')}</b> over the next ${words(r.H)} compared with the last ${words(r.H)}.</li>`);
+  if(r.H>1)items.push(`<li>Strongest period: <b>${fmtDate(r.fd[pk])}</b> at about ${money(r.fut[pk])}. Weakest: <b>${fmtDate(r.fd[lw])}</b> at about ${money(r.fut[lw])}.</li>`);
+  items.push(`<li>${fmtDate(r.fd[0])} will most likely land between <b>${money(r.lo[0])}</b> and <b>${money(r.hi[0])}</b>.</li>`);
+  const base=S.results.naive;
+  if(r.key!=='naive'&&base&&!base.error&&base.rmse>0){
+    const imp=(1-r.rmse/base.rmse)*100;
+    items.push(`<li>${MODELS[r.key].name} ${imp>0?`makes <b>${imp.toFixed(0)}% smaller errors</b> than simply repeating last ${S.season>1?'cycle':'period'}`:'does not beat simply repeating last cycle; try another model'}.</li>`);
+  }
+  ul.innerHTML=items.join('');
+}
+
+/* ============ theme, upload, drag and drop ============ */
+$('#themeBtn').addEventListener('click',()=>{
+  const r=document.documentElement,cur=r.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+  r.dataset.theme=cur==='dark'?'light':'dark';try{localStorage.setItem('sf-theme',r.dataset.theme)}catch(e){}
+  repaint();
+});
+try{const t=localStorage.getItem('sf-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',repaint);
+function repaint(){renderChart();renderSeason()}
+
+function readFile(file){
+  const rd=new FileReader();
+  rd.onload=()=>{
+    try{
+      const p=parseCSV(rd.result);showAlert('');
+      const sel=$('#dataSel');let o=[...sel.options].find(o=>o.value==='custom');
+      if(!o){o=new Option('','custom');sel.add(o,sel.options.length-1)}
+      o.text='Your file: '+file.name;sel.value='custom';S.loaded='custom';
+      setData(p.dates,p.values,file.name.replace(/\.[^.]+$/,''),undefined,false,p.dated);
+    }catch(err){showAlert(err.message)}
+  };
+  rd.readAsText(file);
+}
+$('#fileInput').addEventListener('change',e=>{if(e.target.files[0])readFile(e.target.files[0]);e.target.value=''});
+let dragN=0;
+addEventListener('dragenter',e=>{if([...(e.dataTransfer?.types||[])].includes('Files')){dragN++;$('#drop').classList.add('show')}});
+addEventListener('dragleave',()=>{if(--dragN<=0){dragN=0;$('#drop').classList.remove('show')}});
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();dragN=0;$('#drop').classList.remove('show');const f=e.dataTransfer.files[0];if(f)readFile(f)});
+
+/* ============ boot ============ */
+buildDataSel();buildModelSel();buildParams();
+loadDataset('store');
+</script>
+</body>
+</html>
