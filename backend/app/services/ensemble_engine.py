@@ -4,6 +4,7 @@ Legacy engines mutate module-level state; isolated workers also prevent native-l
 Weights are derived only from preceding training windows; failed members are excluded.
 """
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import subprocess
 import sys
@@ -69,11 +70,27 @@ def evaluate_member(name, frame, fast=True, granularity='monthly'):
     absolute_error=sum(float(np.abs(np.asarray(f['actual'])-f['predicted']).sum()) for f in fold_rows)
     actual_total=sum(float(np.abs(f['actual']).sum()) for f in fold_rows)
     wape=100*absolute_error/actual_total if actual_total>0 else None
+    fold_summary=[]
+    for fold in fold_rows:
+        actual=np.asarray(fold['actual'],dtype=float)
+        predicted=np.asarray(fold['predicted'],dtype=float)
+        denominator=float(np.abs(actual).sum())
+        fold_summary.append({'origin':fold['origin'],
+            'test_start':str(frame.iloc[fold['origin']]['month']),
+            'test_end':str(frame.iloc[min(len(frame)-1,fold['origin']+len(actual)-1)]['month']),
+            'horizon':len(actual),
+            'wape_pct':100*float(np.abs(actual-predicted).sum())/denominator if denominator else None})
+    source_fingerprint=hashlib.sha256(frame.to_csv(index=False).encode()).hexdigest()
     return {'accuracy_pct':max(0.,100-wape) if wape is not None else None,
             'wape_pct':wape,'accuracy_definition':'max(0, 100 − validation WAPE)', '_folds':fold_rows,
             'mae': float(np.mean(errors)) if errors else None,
             'mase': float(np.mean(mase)) if mase else None,
-            'folds': len(errors), 'horizon': width, 'granularity': granularity, 'method': 'expanding-window seasonal MASE'}
+            'folds': len(errors), 'horizon': width, 'granularity': granularity,
+            'method': 'expanding-window seasonal MASE',
+            'protocol_version':'walk-forward-v1', 'history_points':n,
+            'history_start':str(frame.iloc[0]['month']), 'history_end':str(frame.iloc[-1]['month']),
+            'data_fingerprint':source_fingerprint, 'fold_summary':fold_summary,
+            'reproducible':True}
 
 
 def run_ensemble_forecast(sales_df, horizon=12, fast=True, **kwargs):
@@ -118,7 +135,11 @@ def run_ensemble_forecast(sales_df, horizon=12, fast=True, **kwargs):
     wape=100*float(np.abs(np.asarray(ensemble_actual)-ensemble_pred).sum())/denominator if denominator else None
     validation={'accuracy_pct':max(0.,100-wape) if wape is not None else None,'wape_pct':wape,
                 'folds':len(origins),'method':'Walk-forward ensemble; weights from preceding folds only',
-                'accuracy_definition':'max(0, 100 − validation WAPE)'}
+                'accuracy_definition':'max(0, 100 − validation WAPE)',
+                'protocol_version':'walk-forward-ensemble-v1', 'history_points':len(sales_df),
+                'history_start':str(sales_df.iloc[0]['month']), 'history_end':str(sales_df.iloc[-1]['month']),
+                'data_fingerprint':hashlib.sha256(sales_df.to_csv(index=False).encode()).hexdigest(),
+                'reproducible':True}
     for member in members.values():member['validation'].pop('_folds',None)
     return {'status': 'ok', 'validation':validation, 'forecast': forecast, 'members': members, 'weights': weight_map,
             'weight_method': 'chronological CV inverse MASE' if validated else 'equal: no valid CV scale',

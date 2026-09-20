@@ -47,3 +47,15 @@ class ImportAccuracyTests(unittest.TestCase):
             self.assertEqual(result['wape_pct'],20.)
             frame['value']=0.
             self.assertIsNone(ensemble_engine.evaluate_member('trend',frame)['accuracy_pct'])
+
+    def test_validation_has_reproducibility_provenance(self):
+        frame=pd.DataFrame({'month':pd.date_range('2021-01-01',periods=48,freq='MS'),'value':[100.]*48})
+        def predict(name,train,horizon,fast):
+            return {'status':'ok','forecast':{'months':pd.date_range(pd.Timestamp(train.month.iloc[-1])+pd.offsets.MonthBegin(),periods=horizon,freq='MS').astype(str).tolist(),'point':[100.]*horizon}}
+        with patch.object(ensemble_engine,'run_member',side_effect=predict):
+            validation=ensemble_engine.evaluate_member('trend',frame)
+        self.assertTrue(validation['reproducible'])
+        self.assertEqual(validation['protocol_version'],'walk-forward-v1')
+        self.assertEqual(validation['history_points'],48)
+        self.assertEqual(len(validation['fold_summary']),2)
+        self.assertEqual(validation['accuracy_pct'],100.)

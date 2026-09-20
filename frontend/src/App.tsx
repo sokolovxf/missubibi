@@ -22,6 +22,18 @@ type Member = {
     mae: number | null;
     folds: number;
     horizon: number;
+    protocol_version?: string;
+    history_points?: number;
+    history_start?: string;
+    history_end?: string;
+    data_fingerprint?: string;
+    reproducible?: boolean;
+    fold_summary?: {
+      test_start: string;
+      test_end: string;
+      horizon: number;
+      wape_pct?: number | null;
+    }[];
   };
 };
 type Result = Member & {
@@ -1279,9 +1291,21 @@ export default function App() {
                 Accuracy is max(0, 100 − validation WAPE). WAPE is total
                 absolute forecast error divided by total absolute actual demand.
                 MASE scales errors by a seasonal-naive reference. Validation
-                uses expanding monthly windows. Weighted bounds are approximate
-                and are not a calibrated ensemble interval.
+                uses expanding monthly windows on the SQL snapshot shown below.
+                Scores are repeatable for the same data fingerprint, model code,
+                and protocol; changing the SQL data or model configuration should
+                change them. Weighted bounds are approximate and are not a
+                calibrated ensemble interval.
               </p>
+              {result?.validation?.data_fingerprint && (
+                <p className="table-note validation-provenance">
+                  Validation snapshot: {result.validation.history_start} —{" "}
+                  {result.validation.history_end} ·{" "}
+                  {result.validation.history_points} monthly points ·{" "}
+                  {result.validation.folds} expanding holdout windows · fingerprint{" "}
+                  <code>{result.validation.data_fingerprint.slice(0, 12)}</code>
+                </p>
+              )}
             </section>
           )}
           {view === "demand" && (
