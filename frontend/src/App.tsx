@@ -934,23 +934,25 @@ export default function App() {
                         : "—"}
                     </span>
                   </div>
-                  <small>Adjustment relative to model forecast</small>
+                  <small>
+                    {scenarioFit != null
+                      ? `Scenario fit ${scenarioFit.toFixed(1)}% · updates as you edit`
+                      : "Adjustment relative to model forecast"}
+                  </small>
                 </article>
                 <article className="panel kpi">
                   <span>Forecast accuracy</span>
                   <div>
                     <strong>
-                      {scenarioFit != null
-                        ? `${scenarioFit.toFixed(1)}%`
+                      {result?.validation?.accuracy_pct != null
+                        ? `${result.validation.accuracy_pct.toFixed(1)}%`
                         : "—"}
                     </strong>
-                    <span className="submetric">
-                      {scenarioFit != null ? "Scenario fit" : "Validation"}
-                    </span>
+                    <span className="submetric">Validation</span>
                   </div>
                   <small>
                     {result?.validation?.accuracy_pct != null
-                      ? `Model validation ${result.validation.accuracy_pct.toFixed(1)}% · updates as you edit`
+                      ? "100 − WAPE · measured on held-out history"
                       : "Run a model to measure validation accuracy"}
                   </small>
                 </article>
@@ -1066,13 +1068,19 @@ export default function App() {
                   </div>
                   <div className="model-grid">
                     {models.map((m, i) => (
-                      <button
-                        disabled={busy}
-                        key={m.id}
-                        onClick={() => setModel(m.id)}
-                        className={`model-card ${model === m.id ? "selected" : ""}`}
-                        aria-pressed={model === m.id}
-                      >
+                      (() => {
+                        const modelValidation =
+                          result?.params?.model === m.id
+                            ? result.validation
+                            : comparison[m.id]?.validation;
+                        return (
+                          <button
+                            disabled={busy}
+                            key={m.id}
+                            onClick={() => setModel(m.id)}
+                            className={`model-card ${model === m.id ? "selected" : ""}`}
+                            aria-pressed={model === m.id}
+                          >
                         <div>
                           <span className="model-number">0{i + 1}</span>
                           <span className="radio" />
@@ -1080,11 +1088,8 @@ export default function App() {
                         <strong>{m.name}</strong>
                         <small>{m.desc}</small>
                         <small className="model-accuracy">
-                          {(m.id === "ensemble"
-                            ? result?.validation
-                            : comparison[m.id]?.validation
-                          )?.accuracy_pct != null
-                            ? `${(m.id === "ensemble" ? result?.validation : comparison[m.id]?.validation)?.accuracy_pct?.toFixed(1)}% accuracy`
+                          {modelValidation?.accuracy_pct != null
+                            ? `${modelValidation.accuracy_pct.toFixed(1)}% accuracy`
                             : "Accuracy: run model to validate"}
                         </small>
                         <span className="model-status">
@@ -1093,7 +1098,9 @@ export default function App() {
                             : "Select model"}{" "}
                           →
                         </span>
-                      </button>
+                          </button>
+                        );
+                      })()
                     ))}
                   </div>
                 </section>
@@ -1225,6 +1232,10 @@ export default function App() {
                       .filter((m) => m.id !== "ensemble")
                       .map((m) => {
                         const r = comparison[m.id];
+                        const modelValidation =
+                          result?.params?.model === m.id
+                            ? result.validation
+                            : r?.validation;
                         return (
                           <tr key={m.id}>
                             <td>
@@ -1239,17 +1250,17 @@ export default function App() {
                               </span>
                             </td>
                             <td>
-                              {r?.validation?.accuracy_pct != null
-                                ? `${r.validation.accuracy_pct.toFixed(1)}%`
+                              {modelValidation?.accuracy_pct != null
+                                ? `${modelValidation.accuracy_pct.toFixed(1)}%`
                                 : "—"}
                             </td>
                             <td>
-                              {r?.validation?.wape_pct != null
-                                ? `${r.validation.wape_pct.toFixed(1)}%`
+                              {modelValidation?.wape_pct != null
+                                ? `${modelValidation.wape_pct.toFixed(1)}%`
                                 : "—"}
                             </td>
-                            <td>{r?.validation?.mase?.toFixed(3) || "—"}</td>
-                            <td>{r?.validation?.folds ?? "—"}</td>
+                            <td>{modelValidation?.mase?.toFixed(3) || "—"}</td>
+                            <td>{modelValidation?.folds ?? "—"}</td>
                             <td>
                               {result?.weights?.[m.id] != null
                                 ? `${(result.weights[m.id] * 100).toFixed(1)}%`
