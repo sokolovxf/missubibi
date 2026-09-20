@@ -16,4 +16,8 @@ dependencies = [
     "statsmodels>=0.15.0",
     "uvicorn>=0.52.4",
     "xgboost>=3.4.1",
+    "torch>=2.0",
 ]
+
+[project.optional-dependencies]
+classifiers = ["tensorflow>=2.16"]

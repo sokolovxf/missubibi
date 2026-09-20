@@ -1,2502 +1,1288 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import './App.css'
+import { useEffect, useMemo, useRef, useState } from "react";
+import "./App.css";
 
-/*
- * ---------------------------------------------------------
- * TYPES
- * ---------------------------------------------------------
- */
-
-type DashboardData = {
-  total_units: number
-  total_revenue: number
-  forecast_accuracy: number
-  top_product: string
-}
-
-type SalesData = {
-  month: string
-  actual_units: number
-  forecast_units: number
-  revenue: number
-}
-
-type ProductData = {
-  product: string
-  actual_units: number
-  forecast_units: number
-  revenue: number
-}
-
-type Insight = {
-  type: 'positive' | 'warning' | 'neutral'
-  title: string
-  message: string
-}
-
-type SarimaMetrics = {
-  accuracy_pct: number
-  mase_pooled: number | null
-  mase_fold_mean: number | null
-  bias_pct: number | null
-  pct_folds_beating_naive: number | null
-  n_folds: number
-}
-
-type SarimaDiagScheme = {
-  SARIMA?: SarimaMetrics
-  SeasonalNaive?: SarimaMetrics
-  vs_baseline?: {
-    gap: number | null
-    ci95: [number | null, number | null] | null
-    p: number | null
-    distinguishable: boolean | null
+type Row = { month: string; value: number };
+type Curve = {
+  months: string[];
+  point: number[];
+  lower_90: number[];
+  upper_90: number[];
+  spec: string;
+  interval_source?: string;
+};
+type Member = {
+  status: string;
+  message?: string;
+  forecast?: Curve;
+  validation?: {
+    mase: number | null;
+    mae: number | null;
+    folds: number;
+    horizon: number;
+  };
+};
+type Result = Member & {
+  history?: Row[];
+  members?: Record<string, Member>;
+  weights?: Record<string, number>;
+  weight_method?: string;
+  allocation_note?: string;
+  data_fingerprint?: string;
+  diagnostics?: { holdout_mae?: number; mase?: number };
+  params?: { model: string; value_col: string; granularity: string };
+  warnings?: { message: string }[];
+};
+type Options = { dimensions: Record<string, string[]> };
+const models = [
+  { id: "ensemble", name: "Ensemble", desc: "Validation-weighted blend" },
+  { id: "sarima", name: "SARIMA", desc: "Seasonal statistical model" },
+  {
+    id: "randomforest",
+    name: "Random Forest",
+    desc: "Nonlinear demand patterns",
+  },
+  { id: "lstm", name: "LSTM", desc: "Sequential neural network" },
+  { id: "xgboost", name: "XGBoost", desc: "Gradient-boosted trees" },
+  { id: "trend", name: "Trend", desc: "Interpretable baseline" },
+];
+const grains = ["daily", "weekly", "monthly", "quarterly", "yearly"];
+const titles: Record<string, string> = {
+  total: "Company",
+  item: "Item / SKU",
+  product: "Product category",
+  customer: "Customer",
+  industry: "Industry",
+  vendor: "Vendor",
+};
+const compact = (n: number) =>
+  new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(n);
+const date = (s: string) =>
+  new Date(s + "T00:00:00").toLocaleDateString("en-GB", {
+    month: "short",
+    year: "2-digit",
+    day: "numeric",
+  });
+async function api<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch("/api/planning" + path, options);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(
+      typeof body?.detail === "string"
+        ? body.detail
+        : `Request failed (${response.status}). Check the selected filters and server connection.`,
+    );
   }
-  beats_naive?: boolean | null
+  return response.json();
 }
-
-type ForecastResult = {
-  status: 'idle' | 'running' | 'already_running' | 'ok' | 'insufficient_history' | 'error'
-  job_id?: string
-  params?: {
-    dimension: ForecastDimension
-    dimension_value: string | null
-    value_col: ForecastValueCol
-    horizon: number
-    fast: boolean
-  }
-  forecast?: {
-    series: string
-    spec: string
-    horizon: number
-    months: string[]
-    point: number[]
-    lower_90: number[]
-    upper_90: number[]
-    annual_total: number
-    annual_yoy_pct: number | null
-    plausibility_ok: boolean
-    plausibility_detail: string | null
-  }
-  diagnostics?: {
-    wf1?: SarimaDiagScheme
-    wf12?: SarimaDiagScheme
-    ljung_box_p?: number | null
-    residuals_clean?: boolean | null
-    negative_predictions_clipped?: number
-    fit_warnings?: number
-    fit_failures?: number
-    holdout_mae?: number | null
-    holdout_rmse?: number | null
-    holdout_mape?: number | null
-    model_params?: Record<string, unknown>
-    training_samples?: number
-    holdout_samples?: number
-    feature_count?: number
-  }
-  data_anomalies?: { message: string }[]
-  warnings?: { kind: string; message: string }[]
-  message?: string
-  detail?: string
-}
-
-type ForecastDimension = 'total' | 'product' | 'customer'
-type ForecastValueCol = 'revenue' | 'actual_units'
-
-type ForecastOptions = {
-  products: string[]
-  customers: string[]
-}
-
-type ViewId =
-  | 'overview'
-  | 'forecast'
-  | 'revenue'
-  | 'inventory'
-  | 'products'
-  | 'customers'
-  | 'accuracy'
-  | 'lab'
-
-type PeriodId = 'all' | '6' | '12' | '24'
-
-type ProductSort = 'revenue-desc' | 'revenue-asc' | 'variance-desc' | 'variance-asc'
-
-/*
- * ---------------------------------------------------------
- * ICONS (inline, stroke-based, no external icon dependency)
- * ---------------------------------------------------------
- */
-
-type IconProps = { size?: number }
-
-const IconGrid = ({ size = 18 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <rect x="3" y="3" width="8" height="8" rx="1.5" />
-    <rect x="13" y="3" width="8" height="8" rx="1.5" />
-    <rect x="3" y="13" width="8" height="8" rx="1.5" />
-    <rect x="13" y="13" width="8" height="8" rx="1.5" />
-  </svg>
-)
-
-const IconTrend = ({ size = 18 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <path d="M3 17l6-6 4 4 8-9" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M15 6h6v6" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-)
-
-const IconCoin = ({ size = 18 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <circle cx="12" cy="12" r="9" />
-    <path d="M12 7v10M9 9.5c0-1.4 1.3-2.5 3-2.5s3 1 3 2.2-1.3 1.8-3 2-3 .9-3 2.1 1.3 2.2 3 2.2 3-1.1 3-2.5" strokeLinecap="round" />
-  </svg>
-)
-
-const IconBox = ({ size = 18 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <path d="M3 8l9-5 9 5-9 5-9-5z" strokeLinejoin="round" />
-    <path d="M3 8v8l9 5 9-5V8" strokeLinejoin="round" />
-    <path d="M12 13v8" />
-  </svg>
-)
-
-const IconLayers = ({ size = 18 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <path d="M12 3l9 5-9 5-9-5 9-5z" strokeLinejoin="round" />
-    <path d="M3 13l9 5 9-5" strokeLinejoin="round" />
-  </svg>
-)
-
-const IconUsers = ({ size = 18 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <circle cx="9" cy="8" r="3.2" />
-    <path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5" strokeLinecap="round" />
-    <path d="M16 8.2c1.5.2 2.6 1.4 2.6 2.8 0 1.3-1 2.5-2.3 2.8M19 20c0-2.6-1.7-4.5-4-5.2" strokeLinecap="round" />
-  </svg>
-)
-
-const IconTarget = ({ size = 18 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <circle cx="12" cy="12" r="8.5" />
-    <circle cx="12" cy="12" r="4.5" />
-    <circle cx="12" cy="12" r="0.8" fill="currentColor" />
-  </svg>
-)
-
-const IconChevron = ({ size = 14 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-)
-
-const IconFlask = ({ size = 18 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-    <path d="M9 2v6.3L4.2 17a2 2 0 0 0 1.8 2.9h12a2 2 0 0 0 1.8-2.9L15 8.3V2" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M7 2h10" strokeLinecap="round" />
-    <path d="M6.7 14.5h10.6" strokeLinecap="round" />
-  </svg>
-)
-
-const IconSearch = ({ size = 16 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <circle cx="11" cy="11" r="7" />
-    <path d="M20 20l-4-4" strokeLinecap="round" />
-  </svg>
-)
-
-/*
- * ---------------------------------------------------------
- * STATIC CONFIG
- * ---------------------------------------------------------
- */
-
-const NAV_ITEMS: { id: ViewId; label: string; icon: (p: IconProps) => React.ReactElement }[] = [
-  { id: 'overview', label: 'Overview', icon: IconGrid },
-  { id: 'forecast', label: 'Sales forecast', icon: IconTrend },
-  { id: 'revenue', label: 'Revenue', icon: IconCoin },
-  { id: 'inventory', label: 'Inventory risk', icon: IconBox },
-  { id: 'products', label: 'Products', icon: IconLayers },
-  { id: 'customers', label: 'Customers', icon: IconUsers },
-  { id: 'accuracy', label: 'Forecast accuracy', icon: IconTarget },
-  { id: 'lab', label: 'Forecast lab', icon: IconFlask },
-]
-
-const PERIOD_OPTIONS: { id: PeriodId; label: string }[] = [
-  { id: 'all', label: 'All time' },
-  { id: '6', label: 'Last 6 months' },
-  { id: '12', label: 'Last 12 months' },
-  { id: '24', label: 'Last 24 months' },
-]
-
-const VIEW_META: Record<ViewId, { title: string; subtitle: string }> = {
-  overview: {
-    title: 'Sales intelligence dashboard',
-    subtitle: 'AI-powered sales order forecasting and analysis',
-  },
-  forecast: {
-    title: 'Sales forecast',
-    subtitle: 'Actual vs forecast units, with the validated SARIMA projection',
-  },
-  revenue: {
-    title: 'Revenue',
-    subtitle: 'Monthly revenue performance over the selected period',
-  },
-  inventory: {
-    title: 'Inventory risk',
-    subtitle: 'Products where forecast and actuals diverge most — a proxy for over/under-stock risk',
-  },
-  products: {
-    title: 'Products',
-    subtitle: 'Revenue contribution and forecast variance by product',
-  },
-  customers: {
-    title: 'Customers',
-    subtitle: 'Customer-level breakdown',
-  },
-  accuracy: {
-    title: 'Forecast accuracy',
-    subtitle: '1-month vs 12-month validation results for the SARIMA model',
-  },
-  lab: {
-    title: 'Forecast lab',
-    subtitle: 'Run the SARIMA engine directly against any product, customer, or the whole company',
-  },
-}
-
-/*
- * ---------------------------------------------------------
- * FORECAST LAB CHART — history (solid line) feeding into the
- * SARIMA point forecast (dashed) with its 90% band shaded
- * behind it. Pure/stateless, so it lives outside App().
- * ---------------------------------------------------------
- */
-
-/*
- * ---------------------------------------------------------
- * SARIMA FORECAST CHART — history (solid line) feeding into the
- * point forecast (dashed) with its 90% band shaded behind it,
- * plus a vertical "Today" cutoff line marking where actuals end
- * and the forecast begins. Shared by the default dashboard
- * forecast panel and the Forecast Lab. Pure/stateless, so it
- * lives outside App().
- * ---------------------------------------------------------
- */
-
-type SarimaChartProps = {
-  history: SalesData[]
-  forecast: NonNullable<ForecastResult['forecast']>
-  valueCol: ForecastValueCol
-}
-
-// Keep only the most recent stretch of history so the forecast segment
-// (usually 12 months) stays visually readable next to years of actuals.
-const SARIMA_CHART_MAX_HISTORY = 24
-
-const SarimaForecastChart = ({ history, forecast, valueCol }: SarimaChartProps) => {
-  const width = 600
-  const height = 200
-  const pad = 10
-
-  const trimmedHistory =
-    history.length > SARIMA_CHART_MAX_HISTORY
-      ? history.slice(history.length - SARIMA_CHART_MAX_HISTORY)
-      : history
-
-  const histValues = trimmedHistory.map((h) => (valueCol === 'revenue' ? h.revenue : h.actual_units))
-
-  const allValues = [...histValues, ...forecast.upper_90, ...forecast.lower_90, ...forecast.point]
-  const max = allValues.length ? Math.max(...allValues) : 1
-  const min = allValues.length ? Math.min(...allValues) : 0
-  const range = Math.max(max - min, 1)
-
-  const totalPoints = histValues.length + forecast.point.length
-  const xFor = (i: number) =>
-    totalPoints > 1 ? (i / (totalPoints - 1)) * (width - pad * 2) + pad : width / 2
-  const yFor = (v: number) => height - ((v - min) / range) * (height - pad * 2) - pad
-
-  const histPoints = histValues.map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ')
-
-  const fStart = histValues.length
-  const pointPoints = forecast.point.map((v, i) => `${xFor(fStart + i)},${yFor(v)}`).join(' ')
-  const upperPoints = forecast.upper_90.map((v, i) => `${xFor(fStart + i)},${yFor(v)}`)
-  const lowerPoints = forecast.lower_90.map((v, i) => `${xFor(fStart + i)},${yFor(v)}`).reverse()
-  const bandPoints = [...upperPoints, ...lowerPoints].join(' ')
-
-  // Cutoff sits halfway between the last actual and the first forecast
-  // point — "today", the boundary the model is extrapolating from.
-  const cutoffX = histValues.length > 0 ? xFor(fStart - 0.5) : pad
-  const cutoffLabelAnchor = cutoffX > width - 40 ? 'end' : 'start'
-
+function Mark() {
   return (
-    <div className="sarima-chart">
-      <svg className="sarima-chart-svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-        {bandPoints && <polygon points={bandPoints} className="sarima-chart-band" />}
-        {histPoints && <polyline points={histPoints} className="sarima-chart-history" fill="none" />}
-        {pointPoints && <polyline points={pointPoints} className="sarima-chart-forecast" fill="none" />}
-        {histValues.length > 0 && forecast.point.length > 0 && (
-          <>
-            <line x1={cutoffX} x2={cutoffX} y1={0} y2={height} className="sarima-chart-cutoff" />
-            <text
-              x={cutoffLabelAnchor === 'end' ? cutoffX - 4 : cutoffX + 4}
-              y={11}
-              textAnchor={cutoffLabelAnchor}
-              className="sarima-chart-cutoff-label"
-            >
-              Today
+    <svg viewBox="0 0 60 54" aria-hidden="true">
+      <path
+        d="M30 0 40 18 30 36 20 18ZM30 36 20 54 0 54 10 36ZM30 36 50 36 60 54 40 54Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+function Spark({ values }: { values: number[] }) {
+  if (!values.length) return <span className="muted">—</span>;
+  const min = Math.min(...values),
+    span = Math.max(...values) - min || 1;
+  return (
+    <svg className="spark" viewBox="0 0 120 32" aria-hidden="true">
+      <polyline
+        points={values
+          .map(
+            (v, i) =>
+              `${(i * 120) / Math.max(1, values.length - 1)},${29 - ((v - min) / span) * 26}`,
+          )
+          .join(" ")}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+function ForecastChart({
+  history,
+  forecast,
+  scenario,
+  onChange,
+  unit,
+}: {
+  history: Row[];
+  forecast?: Curve;
+  scenario: number[];
+  onChange: (v: number[]) => void;
+  unit: string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const svg = useRef<SVGSVGElement>(null);
+  const drag = useRef<number | null>(null);
+  const [dragMax, setDragMax] = useState<number | null>(null);
+  const hist = history.slice(-36),
+    points = forecast?.point || [],
+    all = [...hist.map((r) => r.value), ...points];
+  const width = 1060,
+    height = 340,
+    left = 65,
+    right = 25,
+    top = 28,
+    bottom = 48;
+  const max =
+    dragMax ??
+    Math.max(1, ...all, ...(forecast?.upper_90 || []), ...scenario) * 1.15;
+  const x = (i: number) =>
+    left + (i * (width - left - right)) / Math.max(1, all.length - 1);
+  const y = (v: number) =>
+    height - bottom - (v / max) * (height - top - bottom);
+  const path = (values: number[], start = 0) =>
+    values.map((v, i) => `${i ? "L" : "M"}${x(start + i)},${y(v)}`).join(" ");
+  const join = (v: number[]) =>
+    hist.length ? [hist[hist.length - 1].value, ...v] : v;
+  const start = Math.max(0, hist.length - 1);
+  const band = forecast
+    ? [
+        ...forecast.upper_90.map((v, i) => `${x(hist.length + i)},${y(v)}`),
+        ...forecast.lower_90
+          .map((v, i) => `${x(hist.length + i)},${y(v)}`)
+          .reverse(),
+      ].join(" ")
+    : "";
+  const active =
+    hover === null
+      ? null
+      : hover < hist.length
+        ? hist[hover]
+        : {
+            month: forecast?.months[hover - hist.length] || "",
+            value: scenario[hover - hist.length] ?? points[hover - hist.length],
+          };
+  return (
+    <div className="chart-wrap">
+      <svg
+        ref={svg}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Historical sales and forecast with prediction range. Use scenario controls below or drag forecast points."
+        onPointerMove={(e) => {
+          const box = svg.current!.getBoundingClientRect();
+          const sx = ((e.clientX - box.left) / box.width) * width;
+          setHover(
+            Math.max(
+              0,
+              Math.min(
+                all.length - 1,
+                Math.round(
+                  ((sx - left) / (width - left - right)) *
+                    Math.max(1, all.length - 1),
+                ),
+              ),
+            ),
+          );
+          if (drag.current !== null) {
+            const sy = ((e.clientY - box.top) / box.height) * height;
+            const next = [...scenario];
+            next[drag.current] = Math.max(
+              0,
+              ((height - bottom - sy) / (height - top - bottom)) * max,
+            );
+            onChange(next);
+          }
+        }}
+        onPointerUp={() => {
+          drag.current = null;
+          setDragMax(null);
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+          setDragMax(null);
+        }}
+        onPointerLeave={() => {
+          if (drag.current === null) setHover(null);
+        }}
+      >
+        <defs>
+          <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#687b83" stopOpacity=".12" />
+            <stop offset="1" stopColor="#687b83" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[0, 0.25, 0.5, 0.75, 1].map((t) => (
+          <g key={t}>
+            <line
+              x1={left}
+              x2={width - right}
+              y1={y(max * t)}
+              y2={y(max * t)}
+              stroke="#e8ebed"
+              strokeDasharray={t ? "3 5" : undefined}
+            />
+            <text x={left - 12} y={y(max * t) + 4} textAnchor="end">
+              {compact(max * t)}
             </text>
+          </g>
+        ))}
+        {hist.length > 0 && (
+          <>
+            <path
+              d={`${path(hist.map((r) => r.value))} L${x(hist.length - 1)},${y(0)} L${left},${y(0)} Z`}
+              fill="url(#area)"
+            />
+            <path
+              d={path(hist.map((r) => r.value))}
+              fill="none"
+              stroke="#455e68"
+              strokeWidth="2.3"
+            />
           </>
+        )}
+        {forecast && (
+          <>
+            <rect
+              x={x(start)}
+              y={top}
+              width={width - right - x(start)}
+              height={height - bottom - top}
+              fill="#e54a4a"
+              opacity=".025"
+            />
+            <polygon points={band} fill="#e7c6c8" opacity=".45" />
+            <line
+              x1={x(start)}
+              x2={x(start)}
+              y1={top}
+              y2={height - bottom}
+              stroke="#c6b3b4"
+              strokeDasharray="4 5"
+            />
+            <text x={x(start) + 10} y={top + 12} className="forecast-label">
+              FORECAST
+            </text>
+            <path
+              d={path(join(points), start)}
+              fill="none"
+              stroke="#bd333d"
+              strokeWidth="2.2"
+              strokeDasharray="5 4"
+            />
+            <path
+              d={path(join(scenario), start)}
+              fill="none"
+              stroke="#bd333d"
+              strokeWidth="2"
+            />
+            {scenario.map((v, i) => (
+              <circle
+                key={i}
+                cx={x(hist.length + i)}
+                cy={y(v)}
+                r="4"
+                fill="white"
+                stroke="#bd333d"
+                strokeWidth="2"
+                className="drag-point"
+                onPointerDown={(e) => {
+                  drag.current = i;
+                  setDragMax(max);
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+              >
+                <title>
+                  {date(forecast.months[i])}: {compact(v)} — drag to adjust
+                  scenario
+                </title>
+              </circle>
+            ))}
+          </>
+        )}
+        {all.map(
+          (_, i) =>
+            i % Math.max(1, Math.ceil(all.length / 8)) === 0 && (
+              <text key={i} x={x(i)} y={height - 17} textAnchor="middle">
+                {date(
+                  i < hist.length
+                    ? hist[i].month
+                    : forecast!.months[i - hist.length],
+                )}
+              </text>
+            ),
+        )}
+        {active && hover !== null && (
+          <g>
+            <line
+              x1={x(hover)}
+              x2={x(hover)}
+              y1={top}
+              y2={height - bottom}
+              stroke="#a4aeb1"
+            />
+            <rect
+              x={Math.min(width - 190, Math.max(left, x(hover) - 75))}
+              y="1"
+              width="180"
+              height="25"
+              rx="4"
+              fill="#26363d"
+            />
+            <text
+              x={Math.min(width - 100, Math.max(left + 90, x(hover) + 15))}
+              y="18"
+              textAnchor="middle"
+              fill="white"
+              style={{ fill: "white" }}
+            >
+              {date(active.month)} · {unit}
+              {compact(active.value)}
+            </text>
+          </g>
         )}
       </svg>
-
-      <div className="sarima-chart-labels">
-        <span>{trimmedHistory[0]?.month ?? ''}</span>
-        <span>{trimmedHistory[trimmedHistory.length - 1]?.month ?? (forecast.months.length > 0 ? forecast.months[0] : '')}</span>
-        <span>{forecast.months.length > 0 ? forecast.months[forecast.months.length - 1] : ''}</span>
-      </div>
-
-      <div className="chart-legend">
-        <span><i className="legend-dot actual-dot" />History</span>
-        <span><i className="legend-dot forecast-dot" style={{ opacity: 1, background: 'var(--accent)' }} />Forecast</span>
-        <span><i className="legend-dot" style={{ background: 'var(--accent)', opacity: 0.2 }} />90% interval</span>
-      </div>
+      {!history.length && (
+        <div className="chart-empty">
+          Run a forecast to explore your sales history and outlook.
+        </div>
+      )}
     </div>
-  )
+  );
 }
-
-/*
- * ---------------------------------------------------------
- * SALES PERFORMANCE PANEL — upgraded from a flat actual/forecast
- * bar chart into a multi-parameter view: grouped bars for actual
- * vs forecast (or a single revenue bar), a secondary-axis trend
- * line (forecast accuracy % in units mode, MoM growth % in
- * revenue mode), a hover tooltip, and a stat strip above the
- * chart summarizing the period at a glance. Pure/stateless aside
- * from its own metric toggle, so it lives outside App().
- * ---------------------------------------------------------
- */
-
-type SalesPerfMetric = 'units' | 'revenue'
-
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
-
-const spFormatChange = (value: number | null) => {
-  if (value === null || !Number.isFinite(value)) return '—'
-  const sign = value > 0 ? '+' : ''
-  return `${sign}${value.toFixed(1)}%`
-}
-
-const spChangeClass = (value: number | null) => {
-  if (value === null || !Number.isFinite(value) || value === 0) return 'sp-neutral'
-  return value > 0 ? 'sp-positive' : 'sp-negative'
-}
-
-const SalesPerformancePanel = ({
-  sales,
-  monthLabel,
-}: {
-  sales: SalesData[]
-  monthLabel: (month: string) => string
-}) => {
-  const [metric, setMetric] = useState<SalesPerfMetric>('units')
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
-
-  const n = sales.length
-
-  /* ---- period-level stats (the "additional parameters") ---- */
-
-  const totalActual = sales.reduce((t, s) => t + s.actual_units, 0)
-  const totalForecast = sales.reduce((t, s) => t + s.forecast_units, 0)
-  const totalRevenue = sales.reduce((t, s) => t + s.revenue, 0)
-
-  const monthlyAccuracy = sales.map((s) =>
-    s.actual_units > 0
-      ? clamp(100 - (Math.abs(s.actual_units - s.forecast_units) / s.actual_units) * 100, 0, 100)
-      : null,
-  )
-  const validAccuracies = monthlyAccuracy.filter((v): v is number => v !== null)
-  const avgAccuracy =
-    validAccuracies.length > 0
-      ? validAccuracies.reduce((t, v) => t + v, 0) / validAccuracies.length
-      : null
-
-  const monthlyGrowth = sales.map((s, i) => {
-    if (i === 0 || sales[i - 1].revenue <= 0) return null
-    return ((s.revenue - sales[i - 1].revenue) / sales[i - 1].revenue) * 100
-  })
-  const validGrowth = monthlyGrowth.filter((v): v is number => v !== null)
-  const avgGrowth =
-    validGrowth.length > 0 ? validGrowth.reduce((t, v) => t + v, 0) / validGrowth.length : null
-
-  const bestMonth = sales.reduce<SalesData | null>(
-    (best, s) => (!best || s.actual_units > best.actual_units ? s : best),
-    null,
-  )
-
-  const netVariance = totalActual > 0 ? ((totalActual - totalForecast) / totalActual) * 100 : null
-
-  /* ---- chart geometry ---- */
-
-  const width = 760
-  const height = 300
-  const padLeft = 48
-  const padRight = 48
-  const padTop = 22
-  const padBottom = 46
-  const plotW = width - padLeft - padRight
-  const plotH = height - padTop - padBottom
-
-  const slotW = n > 0 ? plotW / n : plotW
-  const xForIndex = (i: number) => padLeft + slotW * i + slotW / 2
-
-  const primaryValues =
-    metric === 'units'
-      ? sales.flatMap((s) => [s.actual_units, s.forecast_units])
-      : sales.map((s) => s.revenue)
-  const maxPrimary = primaryValues.length > 0 ? Math.max(...primaryValues) * 1.15 : 1
-  const yForPrimary = (v: number) => padTop + plotH - (v / maxPrimary) * plotH
-
-  const secondaryValues = metric === 'units' ? monthlyAccuracy : monthlyGrowth
-  const maxAbsSecondary =
-    metric === 'units'
-      ? 100
-      : Math.max(...secondaryValues.map((v) => (v !== null ? Math.abs(v) : 0)), 10) * 1.2
-
-  const yForSecondary = (v: number) =>
-    metric === 'units'
-      ? padTop + plotH - (v / 100) * plotH
-      : padTop + plotH - ((v + maxAbsSecondary) / (2 * maxAbsSecondary)) * plotH
-
-  const linePoints = secondaryValues
-    .map((v, i) => (v === null ? null : `${xForIndex(i)},${yForSecondary(v)}`))
-    .filter((p): p is string => p !== null)
-    .join(' ')
-
-  const gridLines = [0, 0.25, 0.5, 0.75, 1]
-
-  const hovered = hoverIndex !== null ? sales[hoverIndex] : null
-  const hoveredAccuracy = hoverIndex !== null ? monthlyAccuracy[hoverIndex] : null
-  const hoveredGrowth = hoverIndex !== null ? monthlyGrowth[hoverIndex] : null
-
+export default function App() {
+  const [view, setView] = useState("forecast"),
+    [options, setOptions] = useState<Options | null>(null),
+    [error, setError] = useState("");
+  const [dimension, setDimension] = useState("total"),
+    [value, setValue] = useState(""),
+    [filters, setFilters] = useState<Record<string, string>>({});
+  const [granularity, setGranularity] = useState("monthly"),
+    [metric, setMetric] = useState("revenue"),
+    [horizon, setHorizon] = useState(12),
+    [model, setModel] = useState("trend");
+  const [history, setHistory] = useState<Row[]>([]),
+    [result, setResult] = useState<Result | null>(null),
+    [busy, setBusy] = useState(false),
+    [scenario, setScenario] = useState<number[]>([]),
+    [adjust, setAdjust] = useState(0);
+  const [classifierItem, setClassifierItem] = useState(""),
+    [classifierBusy, setClassifierBusy] = useState(false);
+  const [classifierResults, setClassifierResults] = useState<
+    {
+      status: string;
+      model: string;
+      message?: string;
+      diagnostics?: Record<string, unknown>;
+      predictions: {
+        item: string;
+        probability: number;
+        review: boolean;
+        label: boolean;
+      }[];
+    }[]
+  >([]);
+  const [search, setSearch] = useState(""),
+    [showFilters, setShowFilters] = useState(false),
+    [classifier, setClassifier] = useState<{
+      message: string;
+      models: { name: string; target: string; status: string }[];
+    } | null>(null);
+  const request = useRef(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<Options>("/options", { signal: controller.signal })
+      .then(setOptions)
+      .catch((e) => {
+        if (e.name !== "AbortError") setError(e.message);
+      });
+    api<Row[]>("/history", { signal: controller.signal })
+      .then(setHistory)
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    if (view === "demand")
+      api<typeof classifier>("/classifiers")
+        .then(setClassifier)
+        .catch((e) => setError(e.message));
+  }, [view]);
+  useEffect(
+    () => () => {
+      request.current++;
+    },
+    [],
+  );
+  const maxHorizon =
+    granularity === "yearly" ? 10 : granularity === "quarterly" ? 40 : 60;
+  const unit =
+    (result?.params?.value_col || "revenue") === "revenue" ? "฿" : "";
+  const shownHistory = result?.history || history;
+  const total = shownHistory.reduce((s, r) => s + r.value, 0),
+    projected = scenario.reduce((s, v) => s + v, 0);
+  const base = result?.forecast?.point || [];
+  const delta = base.reduce((s, v) => s + v, 0)
+    ? (projected / base.reduce((s, v) => s + v, 0) - 1) * 100
+    : 0;
+  const selectedValues = (options?.dimensions[dimension] || []).filter((v) =>
+    v.toLowerCase().includes(search.toLowerCase()),
+  );
+  const comparison = useMemo(
+    () =>
+      result?.members ||
+      (result ? { [result.params?.model || model]: result } : {}),
+    [result, model],
+  );
+  async function run() {
+    const id = ++request.current;
+    setBusy(true);
+    setError("");
+    setResult(null);
+    setScenario([]);
+    setAdjust(0);
+    try {
+      const job = await api<{ job_id: string }>("/forecast/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          dimension,
+          dimension_value: value || null,
+          filters,
+          value_col: metric,
+          granularity,
+          horizon,
+          fast: true,
+        }),
+      });
+      while (id === request.current) {
+        const data = await api<Result>("/forecast/" + job.job_id);
+        if (id !== request.current) return;
+        if (data.status === "running") {
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        if (data.status !== "ok")
+          throw new Error(
+            data.message ||
+              "This series does not have enough history for the selected model.",
+          );
+        setResult(data);
+        setScenario(data.forecast?.point || []);
+        return;
+      }
+    } catch (e) {
+      if (id === request.current)
+        setError(e instanceof Error ? e.message : "Forecast failed");
+    } finally {
+      if (id === request.current) setBusy(false);
+    }
+  }
+  async function predictDemand() {
+    setClassifierBusy(true);
+    setError("");
+    try {
+      const values = await Promise.all(
+        ["nn", "tr"].map((kind) =>
+          api<(typeof classifierResults)[number]>(
+            "/classifier/" + kind + "/predict",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ item: classifierItem || null }),
+            },
+          ),
+        ),
+      );
+      setClassifierResults(values);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Classification failed");
+    } finally {
+      setClassifierBusy(false);
+    }
+  }
+  function exportCsv() {
+    if (!result?.forecast) return;
+    const f = result.forecast;
+    const csv = [
+      "period,model_forecast,scenario,lower_90,upper_90",
+      ...f.months.map((m, i) =>
+        [m, f.point[i], scenario[i], f.lower_90[i], f.upper_90[i]].join(","),
+      ),
+    ].join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "mitsubishi-forecast.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
   return (
-    <div className="sp-root">
-      <style>{`
-        .sp-root { display: flex; flex-direction: column; gap: 16px; }
-        .sp-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-        .sp-metric-toggle { display: inline-flex; border: 1px solid var(--border, rgba(127,127,127,0.25)); border-radius: 8px; overflow: hidden; }
-        .sp-metric-toggle button { border: none; background: transparent; padding: 6px 14px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em; cursor: pointer; color: var(--muted, #8892a6); transition: background 0.15s, color 0.15s; }
-        .sp-metric-toggle button.sp-active { background: var(--accent, #6366f1); color: #fff; }
-        .sp-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-        .sp-stat { border: 1px solid var(--border, rgba(127,127,127,0.18)); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-        .sp-stat-label { font-size: 11px; color: var(--muted, #8892a6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .sp-stat-value { font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .sp-stat-sub { font-size: 11px; font-weight: 600; }
-        .sp-positive { color: #22c55e; }
-        .sp-negative { color: #ef4444; }
-        .sp-neutral { color: var(--muted, #8892a6); }
-        .sp-chart-wrap { position: relative; width: 100%; }
-        .sp-chart-svg { width: 100%; height: auto; display: block; overflow: visible; }
-        .sp-grid-line { stroke: var(--border, rgba(127,127,127,0.14)); stroke-width: 1; }
-        .sp-axis-label { fill: var(--muted, #8892a6); font-size: 10px; }
-        .sp-x-label { fill: var(--muted, #8892a6); font-size: 10px; }
-        .sp-bar-actual { fill: url(#spActualGrad); }
-        .sp-bar-forecast { fill: url(#spForecastGrad); }
-        .sp-bar-revenue { fill: url(#spRevenueGrad); }
-        .sp-line { fill: none; stroke: #f5a623; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-        .sp-line-dot { fill: #f5a623; }
-        .sp-hover-rect { fill: transparent; }
-        .sp-hover-rect:hover { fill: var(--border, rgba(127,127,127,0.08)); }
-        .sp-tooltip { position: absolute; top: 4px; pointer-events: none; background: var(--panel-bg, #1a1d27); border: 1px solid var(--border, rgba(127,127,127,0.25)); border-radius: 8px; padding: 8px 10px; font-size: 12px; min-width: 150px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); transform: translateX(-50%); z-index: 5; }
-        .sp-tooltip strong { display: block; margin-bottom: 4px; font-size: 12.5px; }
-        .sp-tooltip-row { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; color: var(--muted, #8892a6); }
-        .sp-tooltip-row span:last-child { color: inherit; font-weight: 600; }
-        .sp-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted, #8892a6); }
-        .sp-legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
-      `}</style>
-
-      <div className="sp-toolbar">
-        <div className="sp-metric-toggle">
-          <button
-            className={metric === 'units' ? 'sp-active' : ''}
-            onClick={() => setMetric('units')}
-          >
-            Units
-          </button>
-          <button
-            className={metric === 'revenue' ? 'sp-active' : ''}
-            onClick={() => setMetric('revenue')}
-          >
-            Revenue
-          </button>
-        </div>
-
-        <div className="sp-legend">
-          {metric === 'units' ? (
-            <>
-              <span><i className="sp-legend-dot" style={{ background: 'var(--accent, #6366f1)' }} />Actual</span>
-              <span><i className="sp-legend-dot" style={{ background: 'var(--accent, #6366f1)', opacity: 0.4 }} />Forecast</span>
-              <span><i className="sp-legend-dot" style={{ background: '#f5a623' }} />Accuracy %</span>
-            </>
-          ) : (
-            <>
-              <span><i className="sp-legend-dot" style={{ background: 'var(--accent, #6366f1)' }} />Revenue</span>
-              <span><i className="sp-legend-dot" style={{ background: '#f5a623' }} />MoM growth %</span>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="sp-stats">
-        <div className="sp-stat">
-          <span className="sp-stat-label">Total units (actual)</span>
-          <span className="sp-stat-value">{totalActual.toLocaleString()}</span>
-          <span className={`sp-stat-sub ${spChangeClass(netVariance)}`}>
-            {netVariance !== null ? `${spFormatChange(netVariance)} vs forecast` : '—'}
-          </span>
-        </div>
-        <div className="sp-stat">
-          <span className="sp-stat-label">Total revenue</span>
-          <span className="sp-stat-value">฿{(totalRevenue / 1_000_000).toFixed(2)}M</span>
-          <span className={`sp-stat-sub ${spChangeClass(avgGrowth)}`}>
-            {avgGrowth !== null ? `${spFormatChange(avgGrowth)} avg MoM` : '—'}
-          </span>
-        </div>
-        <div className="sp-stat">
-          <span className="sp-stat-label">Avg forecast accuracy</span>
-          <span className="sp-stat-value">{avgAccuracy !== null ? `${avgAccuracy.toFixed(1)}%` : '—'}</span>
-          <span className="sp-stat-sub sp-neutral">{validAccuracies.length} months scored</span>
-        </div>
-        <div className="sp-stat">
-          <span className="sp-stat-label">Best month (units)</span>
-          <span className="sp-stat-value">{bestMonth ? monthLabel(bestMonth.month) : '—'}</span>
-          <span className="sp-stat-sub sp-neutral">
-            {bestMonth ? `${bestMonth.actual_units.toLocaleString()} units` : '—'}
-          </span>
-        </div>
-      </div>
-
-      <div className="sp-chart-wrap">
-        {n > 0 ? (
-          <>
-            <svg className="sp-chart-svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-              <defs>
-                <linearGradient id="spActualGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--accent, #6366f1)" stopOpacity="0.95" />
-                  <stop offset="100%" stopColor="var(--accent, #6366f1)" stopOpacity="0.55" />
-                </linearGradient>
-                <linearGradient id="spForecastGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--accent, #6366f1)" stopOpacity="0.35" />
-                  <stop offset="100%" stopColor="var(--accent, #6366f1)" stopOpacity="0.12" />
-                </linearGradient>
-                <linearGradient id="spRevenueGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--accent, #6366f1)" stopOpacity="0.95" />
-                  <stop offset="100%" stopColor="var(--accent, #6366f1)" stopOpacity="0.4" />
-                </linearGradient>
-              </defs>
-
-              {gridLines.map((g) => {
-                const y = padTop + plotH * g
-                const val = Math.round(maxPrimary * (1 - g))
-                return (
-                  <g key={g}>
-                    <line x1={padLeft} x2={width - padRight} y1={y} y2={y} className="sp-grid-line" />
-                    <text x={padLeft - 8} y={y + 3} textAnchor="end" className="sp-axis-label">
-                      {val >= 1000 ? `${Math.round(val / 1000)}k` : val}
-                    </text>
-                    <text x={width - padRight + 8} y={y + 3} textAnchor="start" className="sp-axis-label">
-                      {metric === 'units'
-                        ? `${Math.round(100 * (1 - g))}%`
-                        : `${Math.round(maxAbsSecondary * (1 - 2 * g))}%`}
-                    </text>
-                  </g>
-                )
-              })}
-
-              {sales.map((s, i) => {
-                const barGap = slotW * 0.08
-                if (metric === 'units') {
-                  const barW = slotW * 0.32
-                  const actualX = xForIndex(i) - barW - barGap / 2
-                  const forecastX = xForIndex(i) + barGap / 2
-                  const actualY = yForPrimary(s.actual_units)
-                  const forecastY = yForPrimary(s.forecast_units)
-                  return (
-                    <g key={s.month}>
-                      <rect
-                        x={actualX}
-                        y={actualY}
-                        width={barW}
-                        height={Math.max(padTop + plotH - actualY, 0)}
-                        rx={3}
-                        className="sp-bar-actual"
-                      />
-                      <rect
-                        x={forecastX}
-                        y={forecastY}
-                        width={barW}
-                        height={Math.max(padTop + plotH - forecastY, 0)}
-                        rx={3}
-                        className="sp-bar-forecast"
-                      />
-                    </g>
-                  )
-                }
-                const barW = slotW * 0.5
-                const barX = xForIndex(i) - barW / 2
-                const barY = yForPrimary(s.revenue)
-                return (
-                  <rect
-                    key={s.month}
-                    x={barX}
-                    y={barY}
-                    width={barW}
-                    height={Math.max(padTop + plotH - barY, 0)}
-                    rx={3}
-                    className="sp-bar-revenue"
-                  />
-                )
-              })}
-
-              {linePoints && <polyline points={linePoints} className="sp-line" />}
-              {secondaryValues.map((v, i) =>
-                v === null ? null : (
-                  <circle
-                    key={`dot-${i}`}
-                    cx={xForIndex(i)}
-                    cy={yForSecondary(v)}
-                    r={hoverIndex === i ? 3.5 : 2.2}
-                    className="sp-line-dot"
-                  />
-                ),
-              )}
-
-              {sales.map((s, i) => (
-                <text
-                  key={`x-${s.month}`}
-                  x={xForIndex(i)}
-                  y={height - padBottom + 16}
-                  textAnchor="middle"
-                  className="sp-x-label"
-                >
-                  {n <= 14 || i % 2 === 0 ? monthLabel(s.month) : ''}
-                </text>
-              ))}
-
-              {sales.map((s, i) => (
-                <rect
-                  key={`hover-${s.month}`}
-                  x={padLeft + slotW * i}
-                  y={padTop}
-                  width={slotW}
-                  height={plotH}
-                  className="sp-hover-rect"
-                  onMouseEnter={() => setHoverIndex(i)}
-                  onMouseLeave={() => setHoverIndex((cur) => (cur === i ? null : cur))}
-                />
-              ))}
-            </svg>
-
-            {hovered && (
-              <div
-                className="sp-tooltip"
-                style={{ left: `${((hoverIndex! + 0.5) / n) * 100}%` }}
-              >
-                <strong>{monthLabel(hovered.month)}</strong>
-                {metric === 'units' ? (
-                  <>
-                    <div className="sp-tooltip-row"><span>Actual</span><span>{hovered.actual_units.toLocaleString()}</span></div>
-                    <div className="sp-tooltip-row"><span>Forecast</span><span>{hovered.forecast_units.toLocaleString()}</span></div>
-                    <div className="sp-tooltip-row">
-                      <span>Accuracy</span>
-                      <span>{hoveredAccuracy !== null ? `${hoveredAccuracy.toFixed(1)}%` : '—'}</span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="sp-tooltip-row"><span>Revenue</span><span>฿{hovered.revenue.toLocaleString()}</span></div>
-                    <div className="sp-tooltip-row">
-                      <span>MoM growth</span>
-                      <span className={spChangeClass(hoveredGrowth)}>{spFormatChange(hoveredGrowth)}</span>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="chart-loading">Loading sales data...</div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function App() {
-  const [dashboard, setDashboard] = useState<DashboardData>({
-    total_units: 0,
-    total_revenue: 0,
-    forecast_accuracy: 0,
-    top_product: '',
-  })
-
-  const [sales, setSales] = useState<SalesData[]>([])
-  const [products, setProducts] = useState<ProductData[]>([])
-  const [insights, setInsights] = useState<Insight[]>([])
-  const [forecast, setForecast] = useState<ForecastResult>({ status: 'idle' })
-  const [randomforestForecast, setRandomforestForecast] = useState<ForecastResult>({ status: 'idle' })
-  const [lstmForecast, setLstmForecast] = useState<ForecastResult>({ status: 'idle' })
-
-  const [activeView, setActiveView] = useState<ViewId>('overview')
-
-  const [periodFilter, setPeriodFilter] = useState<PeriodId>('all')
-  const [periodMenuOpen, setPeriodMenuOpen] = useState(false)
-
-  const [productQuery, setProductQuery] = useState('')
-  const [productSort, setProductSort] = useState<ProductSort>('revenue-desc')
-  const [inventoryQuery, setInventoryQuery] = useState('')
-
-  // --- Forecast Lab: its own job_id ("lab") so runs here never touch
-  // the "default" job the Overview/Accuracy views are polling. ---
-  const [labOptions, setLabOptions] = useState<ForecastOptions>({ products: [], customers: [] })
-  const [labDimension, setLabDimension] = useState<ForecastDimension>('total')
-  const [labDimensionValue, setLabDimensionValue] = useState('')
-  const [labValueCol, setLabValueCol] = useState<ForecastValueCol>('revenue')
-  const [labHorizon, setLabHorizon] = useState(12)
-  const [labFast, setLabFast] = useState(true)
-  const [labModel, setLabModel] = useState<'sarima' | 'randomforest' | 'lstm'>('sarima')
-  const [labResult, setLabResult] = useState<ForecastResult>({ status: 'idle' })
-  const [labRandomforestResult, setLabRandomforestResult] = useState<ForecastResult>({ status: 'idle' })
-  const [labLstmResult, setLabLstmResult] = useState<ForecastResult>({ status: 'idle' })
-  const labPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const labRandomforestPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const labLstmPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  useEffect(() => {
-    // Get dashboard KPI data
-    fetch('http://127.0.0.1:8100/api/dashboard')
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error('Failed to fetch dashboard data')
-        }
-
-        return response.json()
-      })
-      .then((data: DashboardData) => {
-        setDashboard(data)
-      })
-      .catch((error) => {
-        console.error('Failed to fetch dashboard:', error)
-      })
-
-    // Get monthly sales data
-    fetch('http://127.0.0.1:8100/api/sales')
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error('Failed to fetch sales data')
-        }
-
-        return response.json()
-      })
-      .then((data: SalesData[]) => {
-        setSales(data)
-      })
-      .catch((error) => {
-        console.error('Failed to fetch sales:', error)
-      })
-
-    // Get product performance data
-    fetch('http://127.0.0.1:8100/api/products')
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error('Failed to fetch product data')
-        }
-
-        return response.json()
-      })
-      .then((data: ProductData[]) => {
-        setProducts(data)
-      })
-      .catch((error) => {
-        console.error('Failed to fetch products:', error)
-      })
-
-    // Get AI-generated insights
-    fetch('http://127.0.0.1:8100/api/insights')
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error('Failed to fetch AI insights')
-        }
-
-        return response.json()
-      })
-      .then((data: Insight[]) => {
-        setInsights(data)
-      })
-      .catch((error) => {
-        console.error('Failed to fetch AI insights:', error)
-      })
-  }, [])
-
-  // Trigger + poll the SARIMA forecast run separately — it's a
-  // distinct thing from the four MySQL-backed fetches above: it
-  // needs to be triggered, takes 40-90s+, and has its own status.
-  useEffect(() => {
-    let cancelled = false
-    let pollId: ReturnType<typeof setInterval>
-
-    const poll = () => {
-      fetch('http://127.0.0.1:8100/api/forecast')
-        .then((r) => r.json())
-        .then((data: ForecastResult) => {
-          if (cancelled) return
-          setForecast(data)
-          if (data.status !== 'running') {
-            clearInterval(pollId)
-          }
-        })
-        .catch(() => clearInterval(pollId))
-    }
-
-    fetch('http://127.0.0.1:8100/api/forecast/run', { method: 'POST' })
-      .then(() => {
-        setForecast({ status: 'running' })
-        pollId = setInterval(poll, 5000)
-        poll()
-      })
-      .catch(() =>
-        setForecast({ status: 'error', message: 'Could not start forecast.' }),
-      )
-
-    return () => {
-      cancelled = true
-      clearInterval(pollId)
-    }
-  }, [])
-
-  // Trigger + poll the RandomForest forecast run
-  useEffect(() => {
-    let cancelled = false
-    let pollId: ReturnType<typeof setInterval>
-
-    const poll = () => {
-      fetch('http://127.0.0.1:8100/api/randomforest/forecast')
-        .then((r) => r.json())
-        .then((data: ForecastResult) => {
-          if (cancelled) return
-          setRandomforestForecast(data)
-          if (data.status !== 'running') {
-            clearInterval(pollId)
-          }
-        })
-        .catch(() => clearInterval(pollId))
-    }
-
-    fetch('http://127.0.0.1:8100/api/randomforest/forecast/run', { method: 'POST' })
-      .then(() => {
-        setRandomforestForecast({ status: 'running' })
-        pollId = setInterval(poll, 5000)
-        poll()
-      })
-      .catch(() =>
-        setRandomforestForecast({ status: 'error', message: 'Could not start RandomForest forecast.' }),
-      )
-
-    return () => {
-      cancelled = true
-      clearInterval(pollId)
-    }
-  }, [])
-
-  // Trigger + poll the LSTM forecast run
-  useEffect(() => {
-    let cancelled = false
-    let pollId: ReturnType<typeof setInterval>
-
-    const poll = () => {
-      fetch('http://127.0.0.1:8100/api/lstm/forecast')
-        .then((r) => r.json())
-        .then((data: ForecastResult) => {
-          if (cancelled) return
-          setLstmForecast(data)
-          if (data.status !== 'running') {
-            clearInterval(pollId)
-          }
-        })
-        .catch(() => clearInterval(pollId))
-    }
-
-    fetch('http://127.0.0.1:8100/api/lstm/forecast/run', { method: 'POST' })
-      .then(() => {
-        setLstmForecast({ status: 'running' })
-        pollId = setInterval(poll, 5000)
-        poll()
-      })
-      .catch(() =>
-        setLstmForecast({ status: 'error', message: 'Could not start LSTM forecast.' }),
-      )
-
-    return () => {
-      cancelled = true
-      clearInterval(pollId)
-    }
-  }, [])
-
-  // Load the product/customer picker options once the Lab is opened.
-  useEffect(() => {
-    if (activeView !== 'lab') return
-    if (labOptions.products.length > 0 || labOptions.customers.length > 0) return
-
-    fetch('http://127.0.0.1:8100/api/forecast/options')
-      .then((r) => r.json())
-      .then((data: ForecastOptions) => setLabOptions(data))
-      .catch(() => {})
-  }, [activeView, labOptions])
-
-  // Stop polling the lab job if the component unmounts mid-run.
-  useEffect(() => {
-    return () => {
-      if (labPollRef.current) clearInterval(labPollRef.current)
-      if (labRandomforestPollRef.current) clearInterval(labRandomforestPollRef.current)
-      if (labLstmPollRef.current) clearInterval(labLstmPollRef.current)
-    }
-  }, [])
-
-  const runLabForecast = () => {
-    if (labDimension !== 'total' && !labDimensionValue) return
-
-    if (labModel === 'sarima') {
-      if (labPollRef.current) {
-        clearInterval(labPollRef.current)
-        labPollRef.current = null
-      }
-
-      const body = {
-        job_id: 'lab',
-        dimension: labDimension,
-        dimension_value: labDimension === 'total' ? null : labDimensionValue,
-        value_col: labValueCol,
-        horizon: labHorizon,
-        fast: labFast,
-      }
-
-      fetch('http://127.0.0.1:8100/api/forecast/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-        .then(() => {
-          setLabResult({ status: 'running' })
-          setLabRandomforestResult({ status: 'idle' }) // Clear RandomForest result
-
-          const poll = () => {
-            fetch('http://127.0.0.1:8100/api/forecast?job_id=lab')
-              .then((r) => r.json())
-              .then((data: ForecastResult) => {
-                setLabResult(data)
-                if (data.status !== 'running' && labPollRef.current) {
-                  clearInterval(labPollRef.current)
-                  labPollRef.current = null
-                }
-              })
-              .catch(() => {
-                if (labPollRef.current) clearInterval(labPollRef.current)
-              })
-          }
-
-          labPollRef.current = setInterval(poll, 5000)
-          poll()
-        })
-        .catch(() => setLabResult({ status: 'error', message: 'Could not start SARIMA forecast.' }))
-    } else if (labModel === 'randomforest') {
-      if (labRandomforestPollRef.current) {
-        clearInterval(labRandomforestPollRef.current)
-        labRandomforestPollRef.current = null
-      }
-
-      const body = {
-        job_id: 'lab',
-        dimension: labDimension,
-        dimension_value: labDimension === 'total' ? null : labDimensionValue,
-        value_col: labValueCol,
-        horizon: labHorizon,
-        fast: labFast,
-      }
-
-      fetch('http://127.0.0.1:8100/api/randomforest/forecast/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-        .then(() => {
-          setLabRandomforestResult({ status: 'running' })
-          setLabResult({ status: 'idle' }) // Clear SARIMA result
-
-          const poll = () => {
-            fetch('http://127.0.0.1:8100/api/randomforest/forecast?job_id=lab')
-              .then((r) => r.json())
-              .then((data: ForecastResult) => {
-                setLabRandomforestResult(data)
-                if (data.status !== 'running' && labRandomforestPollRef.current) {
-                  clearInterval(labRandomforestPollRef.current)
-                  labRandomforestPollRef.current = null
-                }
-              })
-              .catch(() => {
-                if (labRandomforestPollRef.current) clearInterval(labRandomforestPollRef.current)
-              })
-          }
-
-          labRandomforestPollRef.current = setInterval(poll, 5000)
-          poll()
-        })
-        .catch(() => setLabRandomforestResult({ status: 'error', message: 'Could not start RandomForest forecast.' }))
-    } else if (labModel === 'lstm') {
-      if (labLstmPollRef.current) {
-        clearInterval(labLstmPollRef.current)
-        labLstmPollRef.current = null
-      }
-
-      const body = {
-        job_id: 'lab',
-        dimension: labDimension,
-        dimension_value: labDimension === 'total' ? null : labDimensionValue,
-        value_col: labValueCol,
-        horizon: labHorizon,
-        fast: labFast,
-      }
-
-      fetch('http://127.0.0.1:8100/api/lstm/forecast/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-        .then(() => {
-          setLabLstmResult({ status: 'running' })
-          setLabResult({ status: 'idle' }) // Clear SARIMA result
-          setLabRandomforestResult({ status: 'idle' }) // Clear RandomForest result
-
-          const poll = () => {
-            fetch('http://127.0.0.1:8100/api/lstm/forecast?job_id=lab')
-              .then((r) => r.json())
-              .then((data: ForecastResult) => {
-                setLabLstmResult(data)
-                if (data.status !== 'running' && labLstmPollRef.current) {
-                  clearInterval(labLstmPollRef.current)
-                  labLstmPollRef.current = null
-                }
-              })
-              .catch(() => {
-                if (labLstmPollRef.current) clearInterval(labLstmPollRef.current)
-              })
-          }
-
-          labLstmPollRef.current = setInterval(poll, 5000)
-          poll()
-        })
-        .catch(() => setLabLstmResult({ status: 'error', message: 'Could not start LSTM forecast.' }))
-    }
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * PERIOD FILTER — drives every chart and KPI below, so
-   * switching "All time" / "Last 12 months" etc. actually
-   * changes what's rendered, not just a label.
-   * ---------------------------------------------------------
-   */
-
-  const filteredSales = useMemo(() => {
-    if (periodFilter === 'all') return sales
-    const n = parseInt(periodFilter, 10)
-    return sales.slice(-n)
-  }, [sales, periodFilter])
-
-  const periodLabel =
-    PERIOD_OPTIONS.find((o) => o.id === periodFilter)?.label ?? 'All time'
-
-  /*
-   * ---------------------------------------------------------
-   * DYNAMIC KPI CALCULATIONS (now based on filteredSales)
-   * ---------------------------------------------------------
-   */
-
-  const midpoint = Math.floor(filteredSales.length / 2)
-
-  const previousSalesPeriod =
-    filteredSales.length > 1 ? filteredSales.slice(0, midpoint) : []
-
-  const currentSalesPeriod =
-    filteredSales.length > 1 ? filteredSales.slice(midpoint) : []
-
-  const previousUnits = previousSalesPeriod.reduce(
-    (total, item) => total + item.actual_units,
-    0,
-  )
-
-  const currentUnits = currentSalesPeriod.reduce(
-    (total, item) => total + item.actual_units,
-    0,
-  )
-
-  const previousRevenue = previousSalesPeriod.reduce(
-    (total, item) => total + item.revenue,
-    0,
-  )
-
-  const currentRevenue = currentSalesPeriod.reduce(
-    (total, item) => total + item.revenue,
-    0,
-  )
-
-  const periodTotalUnits = filteredSales.reduce((t, i) => t + i.actual_units, 0)
-  const periodTotalRevenue = filteredSales.reduce((t, i) => t + i.revenue, 0)
-
-  const unitsChange =
-    previousUnits > 0 ? ((currentUnits - previousUnits) / previousUnits) * 100 : 0
-
-  const revenueChange =
-    previousRevenue > 0
-      ? ((currentRevenue - previousRevenue) / previousRevenue) * 100
-      : 0
-
-  const calculateAccuracy = (data: SalesData[]) => {
-    const totalActual = data.reduce((total, item) => total + item.actual_units, 0)
-
-    if (totalActual === 0) {
-      return 0
-    }
-
-    const totalError = data.reduce(
-      (total, item) => total + Math.abs(item.actual_units - item.forecast_units),
-      0,
-    )
-
-    return (1 - totalError / totalActual) * 100
-  }
-
-  const previousAccuracy =
-    previousSalesPeriod.length > 0 ? calculateAccuracy(previousSalesPeriod) : 0
-
-  const currentAccuracy =
-    currentSalesPeriod.length > 0 ? calculateAccuracy(currentSalesPeriod) : 0
-
-  const accuracyChange =
-    previousAccuracy > 0 ? currentAccuracy - previousAccuracy : 0
-
-  /*
-   * Forecast-accuracy KPI: prefer the real, validated SARIMA
-   * 1-month accuracy once it's loaded. Fall back to the backend's
-   * placeholder (lag-1) figure and say so plainly — this is the
-   * fix for the confusing "19%" number, which was always the
-   * placeholder, never the SARIMA result.
-   */
-
-  const sarimaWf1Accuracy =
-    forecast.status === 'ok' && forecast.diagnostics?.wf1?.SARIMA?.accuracy_pct !== undefined
-      ? forecast.diagnostics.wf1.SARIMA.accuracy_pct
-      : undefined
-
-  const accuracyIsPlaceholder = sarimaWf1Accuracy === undefined
-  const displayedAccuracy = sarimaWf1Accuracy ?? dashboard.forecast_accuracy
-
-  /*
-   * ---------------------------------------------------------
-   * REVENUE CHART (viewBox-based, scales to container width —
-   * dynamic regardless of how many months are in filteredSales)
-   * ---------------------------------------------------------
-   */
-
-  const chartWidth = 500
-  const chartHeight = 180
-  const chartPadding = 8
-
-  const maxRevenue =
-    filteredSales.length > 0 ? Math.max(...filteredSales.map((item) => item.revenue)) : 1
-
-  const minRevenue =
-    filteredSales.length > 0 ? Math.min(...filteredSales.map((item) => item.revenue)) : 0
-
-  const revenueRange = Math.max(maxRevenue - minRevenue, 1)
-
-  const revenuePoints = filteredSales.map((item, index) => {
-    const x =
-      filteredSales.length === 1
-        ? chartWidth / 2
-        : (index / (filteredSales.length - 1)) * (chartWidth - chartPadding * 2) +
-          chartPadding
-
-    const y =
-      chartHeight -
-      ((item.revenue - minRevenue) / revenueRange) * (chartHeight - chartPadding * 2) -
-      chartPadding
-
-    return { x, y }
-  })
-
-  const revenueLinePoints = revenuePoints.map((point) => `${point.x},${point.y}`).join(' ')
-
-  const revenueAreaPoints =
-    revenuePoints.length > 0
-      ? `${revenueLinePoints} ${chartWidth - chartPadding},${chartHeight} ${chartPadding},${chartHeight}`
-      : ''
-
-  /*
-   * ---------------------------------------------------------
-   * PRODUCTS — filterable + sortable
-   * ---------------------------------------------------------
-   */
-
-  const productVariance = (item: ProductData) =>
-    item.actual_units !== 0
-      ? ((item.forecast_units - item.actual_units) / item.actual_units) * 100
-      : 0
-
-  const filteredProducts = useMemo(() => {
-    const q = productQuery.trim().toLowerCase()
-    const list = products.filter((p) => p.product.toLowerCase().includes(q))
-
-    return list.slice().sort((a, b) => {
-      if (productSort === 'revenue-desc') return b.revenue - a.revenue
-      if (productSort === 'revenue-asc') return a.revenue - b.revenue
-      const va = Math.abs(productVariance(a))
-      const vb = Math.abs(productVariance(b))
-      return productSort === 'variance-desc' ? vb - va : va - vb
-    })
-  }, [products, productQuery, productSort])
-
-  const inventoryRisk = useMemo(() => {
-    const q = inventoryQuery.trim().toLowerCase()
-    const ranked = products
-      .filter((p) => p.product.toLowerCase().includes(q))
-      .slice()
-      .sort((a, b) => Math.abs(productVariance(b)) - Math.abs(productVariance(a)))
-
-    // Without a search term, keep the view focused on the top-10 riskiest
-    // products. Once someone searches, show every match instead — capping
-    // at 10 would silently hide the very product they typed in for.
-    return q === '' ? ranked.slice(0, 10) : ranked
-  }, [products, inventoryQuery])
-
-  /*
-   * ---------------------------------------------------------
-   * FORMATTING HELPERS
-   * ---------------------------------------------------------
-   */
-
-  const formatChange = (value: number) => {
-    const sign = value > 0 ? '+' : ''
-    return `${sign}${value.toFixed(1)}%`
-  }
-
-  const changeClass = (value: number) => {
-    if (value > 0) return 'positive'
-    if (value < 0) return 'negative'
-    return 'neutral'
-  }
-
-  const monthLabel = (month: string) => {
-    const date = new Date(`${month}-01`)
-    return date.toLocaleString('en-US', { month: 'short' })
-  }
-
-  // Same short month label, but flags whenever the calendar year changes
-  // (or on the very first tick) so the revenue chart can show "2024" /
-  // "2025" once per year instead of repeating it on every single label.
-  const monthYearLabel = (month: string, index: number, list: SalesData[]) => {
-    const date = new Date(`${month}-01`)
-    const mon = date.toLocaleString('en-US', { month: 'short' })
-    const year = date.getFullYear()
-    const prevYear =
-      index > 0 ? new Date(`${list[index - 1].month}-01`).getFullYear() : null
-    return { mon, year, isYearStart: index === 0 || year !== prevYear }
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * VIEW VISIBILITY — which blocks render for which sidebar view
-   * ---------------------------------------------------------
-   */
-
-  const showKpis = activeView === 'overview'
-  const showSalesChart = activeView === 'overview' || activeView === 'forecast'
-  const showRevenueChart = activeView === 'overview' || activeView === 'revenue'
-  const showForecastPanel =
-    activeView === 'overview' || activeView === 'forecast' || activeView === 'accuracy'
-  const showProductsTable = activeView === 'overview' || activeView === 'products'
-  const showInventoryTable = activeView === 'inventory'
-  const showInsights = activeView === 'overview'
-  const showCustomersPlaceholder = activeView === 'customers'
-
-  const meta = VIEW_META[activeView]
-
-  return (
-    <div className="app">
-      {/* SIDEBAR */}
-
+    <div className="workspace">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">M</div>
+          <Mark />
           <div>
-            <div className="brand-name">Missubibi</div>
-            <div className="brand-subtitle">Sales intelligence</div>
+            MITSUBISHI
+            <br />
+            <b>ELECTRIC</b>
+            <small>Changes for the Better</small>
           </div>
         </div>
-
-        <nav className="navigation">
-          {NAV_ITEMS.map((item, index) => (
+        <div className="workspace-label">
+          SALES INTELLIGENCE <span>TH</span>
+        </div>
+        <nav aria-label="Main navigation">
+          {[
+            ["forecast", "◈", "Forecast workspace"],
+            ["models", "≋", "Model performance"],
+            ["demand", "▦", "Demand classifier"],
+            ["data", "▤", "Data & coverage"],
+          ].map(([id, icon, label]) => (
             <button
-              key={item.id}
-              className={`nav-item ${activeView === item.id ? 'active' : ''}`}
-              onClick={() => setActiveView(item.id)}
-              aria-current={activeView === item.id}
+              key={id}
+              aria-label={label}
+              title={label}
+              className={view === id ? "active" : ""}
+              onClick={() => setView(id)}
             >
-              <item.icon />
-              {item.label}
-              {index === 3 && <span className="nav-divider" aria-hidden="true" />}
+              <span>{icon}</span>
+              {label}
+              {id === "forecast" && <i />}
             </button>
           ))}
         </nav>
-
-        <div className="model-status">
-          <span className="status-dot" />
-          <div>
-            <strong>AI model online</strong>
-            <span>Last updated just now</span>
-          </div>
+        <div className="sidebar-note">
+          <span className="small-label">PLANNING ENVIRONMENT</span>
+          <strong>Thailand · Factory automation</strong>
+          <p>Sales forecasts grounded in your MySQL order history.</p>
+        </div>
+        <div className="profile">
+          <div>ME</div>
+          <span>
+            Planning team<small>Mitsubishi Electric</small>
+          </span>
+          <span>⌄</span>
         </div>
       </aside>
-
-      {/* MAIN CONTENT */}
-
-      <main className="main">
-        {/* HEADER */}
-
-        <header className="header">
-          <div>
-            <div className="breadcrumb">Dashboard / {meta.title}</div>
-            <h1>{meta.title}</h1>
-            <p>{meta.subtitle}</p>
-          </div>
-
-          <div className="header-right">
-            <div className="period-control">
-              <button
-                className="period-selector"
-                onClick={() => setPeriodMenuOpen((open) => !open)}
-              >
-                {periodLabel}
-                <IconChevron />
-              </button>
-
-              {periodMenuOpen && (
-                <div className="period-menu">
-                  {PERIOD_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      className={`period-option ${periodFilter === opt.id ? 'active' : ''}`}
-                      onClick={() => {
-                        setPeriodFilter(opt.id)
-                        setPeriodMenuOpen(false)
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="user-avatar">GS</div>
-          </div>
+      <div className="main">
+        <header className="topbar">
+          <span>
+            Sales intelligence <b>/</b>{" "}
+            {view === "forecast"
+              ? "Forecast workspace"
+              : view === "models"
+                ? "Model performance"
+                : view === "demand"
+                  ? "Demand classifier"
+                  : "Data & coverage"}
+          </span>
+          <span className="connection">
+            <i className={options ? "connected" : ""} />
+            {options ? "MySQL connected" : "Connecting to MySQL"}
+          </span>
         </header>
-
-        {/* KPI CARDS */}
-
-        {showKpis && (
-          <section className="kpi-grid">
-            <div className="kpi-card">
-              <div className="kpi-header">
-                <span>Total units</span>
-                <div className="kpi-icon">
-                  <IconGrid size={16} />
-                </div>
-              </div>
-
-              <div className="kpi-value">{periodTotalUnits.toLocaleString()}</div>
-
-              <div className={`kpi-change ${changeClass(unitsChange)}`}>
-                {formatChange(unitsChange)}
-                <span>vs previous period</span>
-              </div>
+        <main>
+          <div className="page-heading">
+            <div>
+              <div className="eyebrow">DEMAND PLANNING / THAILAND</div>
+              <h1>
+                {view === "forecast"
+                  ? "A clearer view of what’s next."
+                  : view === "models"
+                    ? "Understand every forecast."
+                    : view === "demand"
+                      ? "Demand, at the item level."
+                      : "Know the data behind the plan."}
+              </h1>
+              <p>
+                {view === "forecast"
+                  ? "Explore sales patterns, compare models, and shape your next planning cycle."
+                  : view === "models"
+                    ? "Review model availability, chronological validation, and ensemble contributions."
+                    : view === "demand"
+                      ? "Separate high-demand classification from the probability of an item selling."
+                      : "Source coverage, planning assumptions, and available dimensions."}
+              </p>
             </div>
-
-            <div className="kpi-card">
-              <div className="kpi-header">
-                <span>Revenue</span>
-                <div className="kpi-icon">
-                  <IconCoin size={16} />
-                </div>
-              </div>
-
-              <div className="kpi-value">
-                ฿{(periodTotalRevenue / 1_000_000).toFixed(2)}M
-              </div>
-
-              <div className={`kpi-change ${changeClass(revenueChange)}`}>
-                {formatChange(revenueChange)}
-                <span>vs previous period</span>
-              </div>
+            <button
+              className="secondary export"
+              onClick={exportCsv}
+              disabled={!result?.forecast}
+            >
+              ↗ Export forecast
+            </button>
+          </div>
+          {error && (
+            <div className="error" role="alert">
+              {error}
+              <button onClick={() => setError("")} aria-label="Dismiss error">
+                ×
+              </button>
             </div>
-
-            <div className="kpi-card">
-              <div className="kpi-header">
-                <span>Forecast accuracy</span>
-                <div className="kpi-icon">
-                  <IconTarget size={16} />
-                </div>
-              </div>
-
-              <div className="kpi-value">{displayedAccuracy.toFixed(1)}%</div>
-
-              <div
-                className={`kpi-change ${
-                  accuracyIsPlaceholder ? 'neutral' : changeClass(accuracyChange)
-                }`}
+          )}
+          {view === "forecast" && (
+            <>
+              <section
+                className="controls panel"
+                aria-label="Forecast controls"
               >
-                {accuracyIsPlaceholder
-                  ? 'Provisional'
-                  : formatChange(accuracyChange)}
-                <span>
-                  {accuracyIsPlaceholder
-                    ? 'placeholder (lag-1) — SARIMA loading'
-                    : '1-month SARIMA, validated'}
-                </span>
-              </div>
-            </div>
-
-            <div className="kpi-card">
-              <div className="kpi-header">
-                <span>Top product</span>
-                <div className="kpi-icon">
-                  <IconLayers size={16} />
-                </div>
-              </div>
-
-              <div className="kpi-value product-kpi">{dashboard.top_product}</div>
-
-              <div className="kpi-change neutral">
-                Top revenue product
-                <span>based on current data</span>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* SALES + FORECAST CHARTS */}
-
-        {(showSalesChart || showForecastPanel) && (
-          <section className="charts-grid">
-            {showSalesChart && (
-              <div className="panel sales-panel">
-                <div className="panel-header">
-                  <div>
-                    <h2>Sales performance</h2>
-                    <p>Actual vs forecast, revenue, and accuracy trend for {periodLabel.toLowerCase()}</p>
-                  </div>
-                </div>
-
-                <SalesPerformancePanel sales={filteredSales} monthLabel={monthLabel} />
-              </div>
-            )}
-
-            {showForecastPanel && (
-              <div className="panel forecast-panel">
-                <div className="panel-header">
-                  <div>
-                    <h2>Model Forecasts</h2>
-                    <p>Comparison of SARIMA, RandomForest, and LSTM forecasts</p>
-                  </div>
-                </div>
-
-                {/* SARIMA Forecast */}
-                {forecast.status === 'running' && (
-                  <div className="chart-loading">Running SARIMA forecast — this takes 40–90s…</div>
-                )}
-
-                {forecast.status === 'insufficient_history' && (
-                  <div className="chart-loading">{forecast.message}</div>
-                )}
-
-                {forecast.status === 'error' && (
-                  <div className="chart-loading">{forecast.message}</div>
-                )}
-
-                {forecast.status === 'ok' && forecast.forecast && (
-                  <div className="model-forecast sarima-forecast">
-                    <h3>SARIMA Forecast</h3>
-                    <SarimaForecastChart
-                      history={filteredSales}
-                      forecast={forecast.forecast}
-                      valueCol="revenue"
-                    />
-                    <div className="forecast-meta">
-                      <div>
-                        <strong>
-                          ฿{(forecast.forecast.annual_total / 1_000_000).toFixed(1)}M
-                        </strong>
-                        <span>Forecast annual total</span>
-                      </div>
-
-                      <div>
-                        <strong>
-                          {forecast.forecast.annual_yoy_pct !== null
-                            ? `${forecast.forecast.annual_yoy_pct > 0 ? '+' : ''}${forecast.forecast.annual_yoy_pct}%`
-                            : '—'}
-                        </strong>
-                        <span>YoY vs FY2024</span>
-                      </div>
-
-                      <div>
-                        <strong>{forecast.diagnostics?.wf1?.SARIMA?.accuracy_pct ?? '—'}%</strong>
-                        <span>1-month accuracy (validated)</span>
-                      </div>
-
-                      <div>
-                        <strong>{forecast.diagnostics?.wf12?.SARIMA?.accuracy_pct ?? '—'}%</strong>
-                        <span>12-month accuracy</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* RandomForest Forecast */}
-                {randomforestForecast.status === 'running' && (
-                  <div className="chart-loading">Running RandomForest forecast…</div>
-                )}
-
-                {randomforestForecast.status === 'insufficient_history' && (
-                  <div className="chart-loading">{randomforestForecast.message}</div>
-                )}
-
-                {randomforestForecast.status === 'error' && (
-                  <div className="chart-loading">{randomforestForecast.message}</div>
-                )}
-
-                {randomforestForecast.status === 'ok' && randomforestForecast.forecast && (
-                  <div className="model-forecast randomforest-forecast">
-                    <h3>RandomForest Forecast</h3>
-                    <SarimaForecastChart
-                      history={filteredSales}
-                      forecast={randomforestForecast.forecast}
-                      valueCol="revenue"
-                    />
-                    <div className="forecast-meta">
-                      <div>
-                        <strong>
-                          ฿{(randomforestForecast.forecast.annual_total / 1_000_000).toFixed(1)}M
-                        </strong>
-                        <span>Forecast annual total</span>
-                      </div>
-
-                      <div>
-                        <strong>
-                          {randomforestForecast.forecast.annual_yoy_pct !== null
-                            ? `${randomforestForecast.forecast.annual_yoy_pct > 0 ? '+' : ''}${randomforestForecast.forecast.annual_yoy_pct}%`
-                            : '—'}
-                        </strong>
-                        <span>YoY vs FY2024</span>
-                      </div>
-
-                      <div>
-                        <strong>{randomforestForecast.diagnostics?.holdout_mae !== undefined && randomforestForecast.diagnostics.holdout_mae !== null
-                          ? Math.round(randomforestForecast.diagnostics.holdout_mae)
-                          : '—'}</strong>
-                        <span>Holdout MAE</span>
-                      </div>
-
-                      <div>
-                        <strong>{randomforestForecast.diagnostics?.holdout_rmse !== undefined && randomforestForecast.diagnostics.holdout_rmse !== null
-                          ? Math.round(randomforestForecast.diagnostics.holdout_rmse)
-                          : '—'}</strong>
-                        <span>Holdout RMSE</span>
-                      </div>
-
-                      <div>
-                        <strong>{randomforestForecast.diagnostics?.holdout_mape !== undefined && randomforestForecast.diagnostics.holdout_mape !== null
-                          ? randomforestForecast.diagnostics.holdout_mape.toFixed(1) + '%'
-                          : '—'}</strong>
-                        <span>Holdout MAPE</span>
-                      </div>
-
-                      {/* Accuracy metric */}
-                      <div>
-                        <strong>{randomforestForecast.diagnostics?.holdout_mape !== undefined && randomforestForecast.diagnostics.holdout_mape !== null
-                          ? Math.max(0, 100 - randomforestForecast.diagnostics.holdout_mape).toFixed(1) + '%'
-                          : '—'}</strong>
-                        <span>Accuracy (estimated)</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* LSTM Forecast */}
-                {lstmForecast.status === 'running' && (
-                  <div className="chart-loading">Running LSTM forecast…</div>
-                )}
-
-                {lstmForecast.status === 'insufficient_history' && (
-                  <div className="chart-loading">{lstmForecast.message}</div>
-                )}
-
-                {lstmForecast.status === 'error' && (
-                  <div className="chart-loading">{lstmForecast.message}</div>
-                )}
-
-                {lstmForecast.status === 'ok' && lstmForecast.forecast && (
-                  <div className="model-forecast lstm-forecast">
-                    <h3>LSTM Forecast</h3>
-                    <SarimaForecastChart
-                      history={filteredSales}
-                      forecast={lstmForecast.forecast}
-                      valueCol="revenue"
-                    />
-                    <div className="forecast-meta">
-                      <div>
-                        <strong>
-                          ฿{(lstmForecast.forecast.annual_total / 1_000_000).toFixed(1)}M
-                        </strong>
-                        <span>Forecast annual total</span>
-                      </div>
-
-                      <div>
-                        <strong>
-                          {lstmForecast.forecast.annual_yoy_pct !== null
-                            ? `${lstmForecast.forecast.annual_yoy_pct > 0 ? '+' : ''}${lstmForecast.forecast.annual_yoy_pct}%`
-                            : '—'}
-                        </strong>
-                        <span>YoY vs FY2024</span>
-                      </div>
-
-                      <div>
-                        <strong>{lstmForecast.diagnostics?.holdout_mae !== undefined && lstmForecast.diagnostics.holdout_mae !== null
-                          ? Math.round(lstmForecast.diagnostics.holdout_mae)
-                          : '—'}</strong>
-                        <span>Holdout MAE</span>
-                      </div>
-
-                      <div>
-                        <strong>{lstmForecast.diagnostics?.holdout_rmse !== undefined && lstmForecast.diagnostics.holdout_rmse !== null
-                          ? Math.round(lstmForecast.diagnostics.holdout_rmse)
-                          : '—'}</strong>
-                        <span>Holdout RMSE</span>
-                      </div>
-
-                      <div>
-                        <strong>{lstmForecast.diagnostics?.holdout_mape !== undefined && lstmForecast.diagnostics.holdout_mape !== null
-                          ? lstmForecast.diagnostics.holdout_mape.toFixed(1) + '%'
-                          : '—'}</strong>
-                        <span>Holdout MAPE</span>
-                      </div>
-
-                      {/* Accuracy metric */}
-                      <div>
-                        <strong>{lstmForecast.diagnostics?.holdout_mape !== undefined && lstmForecast.diagnostics.holdout_mape !== null
-                          ? Math.max(0, 100 - lstmForecast.diagnostics.holdout_mape).toFixed(1) + '%'
-                          : '—'}</strong>
-                        <span>Accuracy (estimated)</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Show message if no forecasts are available */}
-                {!((forecast.status === 'ok' && forecast.forecast) ||
-                   (randomforestForecast.status === 'ok' && randomforestForecast.forecast) ||
-                   (lstmForecast.status === 'ok' && lstmForecast.forecast)) &&
-                ((forecast.status === 'running' || randomforestForecast.status === 'running' || lstmForecast.status === 'running') ||
-                 (forecast.status === 'idle' && randomforestForecast.status === 'idle' && lstmForecast.status === 'idle')) && (
-                  <div className="chart-loading">No forecast data available. Start a forecast to see predictions.</div>
-                )}
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* REVENUE */}
-
-        {showRevenueChart && (
-          <section className="charts-grid single">
-            <div className="panel revenue-panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Revenue</h2>
-                  <p>Monthly revenue performance</p>
-                </div>
-              </div>
-
-              <div className="revenue-total">
-                <strong>฿{(periodTotalRevenue / 1_000_000).toFixed(2)}M</strong>
-                <span className={revenueChange >= 0 ? 'positive' : 'negative'}>
-                  {formatChange(revenueChange)}
-                </span>
-              </div>
-
-              <div className="revenue-chart">
-                <div className="revenue-grid">
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                </div>
-
-                {filteredSales.length > 0 ? (
-                  <svg className="revenue-svg" viewBox="0 0 500 180" preserveAspectRatio="none">
-                    <polyline points={revenueAreaPoints} fill="currentColor" opacity="0.08" />
-                    <polyline
-                      points={revenueLinePoints}
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    {revenuePoints.map((point, index) => (
-                      <circle key={filteredSales[index].month} cx={point.x} cy={point.y} r="3.5" fill="currentColor">
-                        <title>
-                          {filteredSales[index].month}: ฿{filteredSales[index].revenue.toLocaleString()}
-                        </title>
-                      </circle>
-                    ))}
-                  </svg>
-                ) : (
-                  <div className="chart-loading">Loading revenue data...</div>
-                )}
-              </div>
-
-              <div className="month-labels">
-                {filteredSales.map((item, index) => {
-                  const { mon, year, isYearStart } = monthYearLabel(item.month, index, filteredSales)
-                  return (
-                    <span className="month-label-cell" key={item.month}>
-                      <span className="month-label-month">{mon}</span>
-                      {isYearStart && <span className="month-label-year">{year}</span>}
-                    </span>
-                  )
-                })}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* PRODUCTS */}
-
-        {showProductsTable && (
-          <section className="charts-grid single">
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Product performance</h2>
-                  <p>Revenue contribution by product</p>
-                </div>
-              </div>
-
-              <div className="table-controls">
-                <div className="search-field">
-                  <IconSearch />
-                  <input
-                    type="text"
-                    placeholder="Search products"
-                    value={productQuery}
-                    onChange={(e) => setProductQuery(e.target.value)}
-                  />
-                </div>
-
-                <select
-                  className="sort-select"
-                  value={productSort}
-                  onChange={(e) => setProductSort(e.target.value as ProductSort)}
-                >
-                  <option value="revenue-desc">Revenue: high to low</option>
-                  <option value="revenue-asc">Revenue: low to high</option>
-                  <option value="variance-desc">Variance: high to low</option>
-                  <option value="variance-asc">Variance: low to high</option>
-                </select>
-              </div>
-
-              <div className="product-table">
-                <div className="product-row product-header">
-                  <span>Product</span>
-                  <span>Revenue</span>
-                  <span>Forecast variance</span>
-                </div>
-
-                <div className="product-table-scroll">
-                  {filteredProducts.length > 0 ? (
-                    filteredProducts.map((item) => {
-                      const variance = productVariance(item)
-                      const varianceClass =
-                        variance > 0 ? 'positive' : variance < 0 ? 'negative' : 'neutral'
-
-                      return (
-                        <div className="product-row" key={item.product}>
-                          <div className="product-name">
-                            <strong>{item.product}</strong>
-                            <span>{item.actual_units.toLocaleString()} actual units</span>
-                          </div>
-
-                          <strong>฿{(item.revenue / 1_000_000).toFixed(2)}M</strong>
-
-                          <span className={varianceClass}>
-                            {variance > 0 ? '+' : ''}
-                            {variance.toFixed(1)}%
-                          </span>
-                        </div>
-                      )
-                    })
-                  ) : products.length === 0 ? (
-                    <div className="chart-loading">Loading product data...</div>
-                  ) : (
-                    <div className="empty-state">No products match "{productQuery}".</div>
-                  )}
-                </div>
-
-                <div className="product-table-count">
-                  Showing {filteredProducts.length} of {products.length} products
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* INVENTORY RISK */}
-
-        {showInventoryTable && (
-          <section className="charts-grid single">
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Inventory risk</h2>
-                  <p>Products ranked by absolute forecast variance — the biggest gaps carry the most over/under-stock risk</p>
-                </div>
-              </div>
-
-              <div className="table-controls">
-                <div className="search-field">
-                  <IconSearch />
-                  <input
-                    type="text"
-                    placeholder="Search products"
-                    value={inventoryQuery}
-                    onChange={(e) => setInventoryQuery(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="product-table">
-                <div className="product-row product-header">
-                  <span>Product</span>
-                  <span>Revenue</span>
-                  <span>Forecast variance</span>
-                </div>
-
-                {products.length === 0 ? (
-                  <div className="chart-loading">Loading product data...</div>
-                ) : inventoryRisk.length > 0 ? (
-                  inventoryRisk.map((item) => {
-                    const variance = productVariance(item)
-                    const varianceClass =
-                      variance > 0 ? 'positive' : variance < 0 ? 'negative' : 'neutral'
-
-                    return (
-                      <div className="product-row" key={item.product}>
-                        <div className="product-name">
-                          <strong>{item.product}</strong>
-                          <span>{item.actual_units.toLocaleString()} actual units</span>
-                        </div>
-
-                        <strong>฿{(item.revenue / 1_000_000).toFixed(2)}M</strong>
-
-                        <span className={varianceClass}>
-                          {variance > 0 ? '+' : ''}
-                          {variance.toFixed(1)}%
-                        </span>
-                      </div>
-                    )
-                  })
-                ) : (
-                  <div className="empty-state">No products match "{inventoryQuery}".</div>
-                )}
-              </div>
-
-              <div className="forecast-caveat">
-                {inventoryQuery.trim() === ''
-                  ? 'Showing the top 10 products by absolute forecast variance. '
-                  : `Showing all ${inventoryRisk.length} match(es) for "${inventoryQuery}". `}
-                This view is derived from forecast-vs-actual variance, not a live inventory
-                feed — there's no stock-on-hand data in the current schema.
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* CUSTOMERS */}
-
-        {showCustomersPlaceholder && (
-          <section className="charts-grid single">
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>Customers</h2>
-                  <p>Customer-level breakdown</p>
-                </div>
-              </div>
-
-              <div className="empty-state">
-                Customer-level analytics needs a dedicated backend endpoint — today's
-                API only returns product-level aggregates. Add a{' '}
-                <code>/api/customers</code> route grouping by customer to unlock this
-                view.
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* AI INSIGHTS */}
-
-        {showInsights && (
-          <section className="charts-grid single">
-            <div className="panel insights-panel">
-              <div className="panel-header">
-                <div>
-                  <h2>AI insights</h2>
-                  <p>Automated recommendations</p>
-                </div>
-              </div>
-
-              {insights.length > 0 ? (
-                insights.map((insight, index) => (
-                  <div className="insight" key={`${insight.title}-${index}`}>
-                    <div className={`insight-icon ${insight.type}-icon`}>
-                      {insight.type === 'positive' ? '↑' : insight.type === 'warning' ? '!' : '◆'}
-                    </div>
-
-                    <div>
-                      <strong>{insight.title}</strong>
-                      <p>{insight.message}</p>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="chart-loading">Loading AI insights...</div>
-              )}
-            </div>
-          </section>
-        )}
-
-        {/* FORECAST LAB */}
-
-        {activeView === 'lab' && (
-          <section className="charts-grid single">
-            <div className="panel lab-controls">
-              <div className="panel-header">
-                <div>
-                  <h2>Run configuration</h2>
-                  <p>Pick a series and validation depth, then run the SARIMA, RandomForest, or LSTM engine directly</p>
-                </div>
-              </div>
-
-              <div className="lab-form">
-                <label>
-                  Model
+                <div className="control">
+                  <label htmlFor="dimension">Forecast by</label>
                   <select
-                    value={labModel}
-                    onChange={(e) => setLabModel(e.target.value as 'sarima' | 'randomforest' | 'lstm')}
-                  >
-                    <option value="sarima">SARIMA</option>
-                    <option value="randomforest">Random Forest</option>
-                    <option value="lstm">LSTM</option>
-                  </select>
-                </label>
-
-                <label>
-                  Series
-                  <select
-                    value={labDimension}
+                    id="dimension"
+                    value={dimension}
+                    disabled={busy}
                     onChange={(e) => {
-                      setLabDimension(e.target.value as ForecastDimension)
-                      setLabDimensionValue('')
+                      setDimension(e.target.value);
+                      setValue("");
+                      setSearch("");
                     }}
                   >
-                    <option value="total">Total company</option>
-                    <option value="product">By product</option>
-                    <option value="customer">By customer</option>
+                    {Object.entries(titles).map(([id, label]) => (
+                      <option
+                        key={id}
+                        value={id}
+                        disabled={
+                          id === "vendor" && !options?.dimensions.vendor.length
+                        }
+                      >
+                        {label}
+                        {id === "vendor" && !options?.dimensions.vendor.length
+                          ? " · no mapping"
+                          : ""}
+                      </option>
+                    ))}
                   </select>
-                </label>
-
-                {labDimension !== 'total' && (
-                  <label>
-                    {labDimension === 'product' ? 'Product' : 'Customer'}
+                </div>
+                {dimension !== "total" && (
+                  <div className="control selection">
+                    <label htmlFor="value">
+                      Select {titles[dimension].toLowerCase()}
+                    </label>
+                    <input
+                      aria-label="Search dimension values"
+                      placeholder="Search…"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                    />
                     <select
-                      value={labDimensionValue}
-                      onChange={(e) => setLabDimensionValue(e.target.value)}
+                      id="value"
+                      value={value}
+                      disabled={busy}
+                      onChange={(e) => setValue(e.target.value)}
                     >
-                      <option value="">Select…</option>
-                      {(labDimension === 'product' ? labOptions.products : labOptions.customers).map(
-                        (v) => (
-                          <option key={v} value={v}>
-                            {v}
-                          </option>
-                        ),
-                      )}
+                      <option value="">Choose a value</option>
+                      {selectedValues.map((v) => (
+                        <option key={v}>{v}</option>
+                      ))}
                     </select>
-                  </label>
+                  </div>
                 )}
-
-                <label>
-                  Value
+                <div className="control">
+                  <label htmlFor="metric">Measure</label>
                   <select
-                    value={labValueCol}
-                    onChange={(e) => setLabValueCol(e.target.value as ForecastValueCol)}
+                    id="metric"
+                    value={metric}
+                    disabled={busy}
+                    onChange={(e) => setMetric(e.target.value)}
                   >
-                    <option value="revenue">Revenue</option>
-                    <option value="actual_units">Units</option>
+                    <option value="revenue">Revenue · THB</option>
+                    <option value="actual_units">Sales volume · units</option>
                   </select>
-                </label>
-
-                <label>
-                  Horizon (months)
+                </div>
+                <div className="control">
+                  <label htmlFor="grain">Frequency</label>
+                  <select
+                    id="grain"
+                    value={granularity}
+                    disabled={busy}
+                    onChange={(e) => {
+                      setGranularity(e.target.value);
+                      setHorizon(e.target.value === "yearly" ? 3 : 12);
+                    }}
+                  >
+                    {grains.map((g) => (
+                      <option key={g}>{g}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="control horizon">
+                  <label htmlFor="horizon">
+                    Horizon <b>{horizon} periods</b>
+                  </label>
                   <input
-                    type="number"
-                    min={1}
-                    max={24}
-                    value={labHorizon}
-                    onChange={(e) => setLabHorizon(Math.max(1, Number(e.target.value) || 1))}
+                    id="horizon"
+                    type="range"
+                    min="1"
+                    max={maxHorizon}
+                    value={horizon}
+                    disabled={busy}
+                    onChange={(e) => setHorizon(+e.target.value)}
+                    onPointerUp={() => {
+                      if (result && !busy) void run();
+                    }}
+                    onKeyUp={(e) => {
+                      if (
+                        result &&
+                        !busy &&
+                        ["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                          e.key,
+                        )
+                      )
+                        void run();
+                    }}
                   />
-                </label>
-
-                <label className="lab-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={labFast}
-                    onChange={(e) => setLabFast(e.target.checked)}
-                  />
-                  Fast mode (smaller order search — uncheck to match the notebook exactly, slower)
-                </label>
-
+                </div>
                 <button
-                  className="lab-run-button"
-                  onClick={runLabForecast}
-                  disabled={
-                    (labModel === 'sarima' && labResult.status === 'running') ||
-                    (labModel === 'randomforest' && labRandomforestResult.status === 'running') ||
-                    (labModel === 'lstm' && labLstmResult.status === 'running') ||
-                    (labDimension !== 'total' && !labDimensionValue)
-                  }
+                  className="filter-button"
+                  onClick={() => setShowFilters(!showFilters)}
+                  aria-expanded={showFilters}
                 >
-                  {(labModel === 'sarima' && labResult.status === 'running')
-                    ? 'Running… (40–90s)'
-                    : (labModel === 'randomforest' && labRandomforestResult.status === 'running')
-                    ? 'Running…'
-                    : (labModel === 'lstm' && labLstmResult.status === 'running')
-                    ? 'Running…'
-                    : 'Run forecast'}
+                  ☷ Filters{" "}
+                  {Object.values(filters).filter(Boolean).length || ""}
+                </button>
+                <button
+                  className="primary"
+                  disabled={
+                    busy || !options || (dimension !== "total" && !value)
+                  }
+                  onClick={run}
+                >
+                  {busy ? "Calculating…" : "Run forecast"} <span>↗</span>
+                </button>
+                {showFilters && (
+                  <div className="filter-row">
+                    {["item", "customer", "industry", "vendor"].map((d) => (
+                      <label key={d}>
+                        {titles[d]}
+                        <select
+                          value={filters[d] || ""}
+                          disabled={busy || !options?.dimensions[d]?.length}
+                          onChange={(e) =>
+                            setFilters({ ...filters, [d]: e.target.value })
+                          }
+                        >
+                          <option value="">
+                            All {titles[d].toLowerCase()}s
+                          </option>
+                          {options?.dimensions[d]?.map((v) => (
+                            <option key={v}>{v}</option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </section>
+              <div className="kpis">
+                <article className="panel kpi">
+                  <span>Historical {unit ? "revenue" : "volume"}</span>
+                  <div>
+                    <strong>
+                      {unit}
+                      {compact(total)}
+                    </strong>
+                    <Spark
+                      values={shownHistory.slice(-12).map((r) => r.value)}
+                    />
+                  </div>
+                  <small>
+                    {shownHistory.length
+                      ? `${date(shownHistory[0].month)} — ${date(shownHistory[shownHistory.length - 1].month)}`
+                      : "Waiting for source data"}
+                  </small>
+                </article>
+                <article className="panel kpi">
+                  <span>Forecast · selected horizon</span>
+                  <div>
+                    <strong>
+                      {result
+                        ? unit + compact(base.reduce((s, v) => s + v, 0))
+                        : "—"}
+                    </strong>
+                    <Spark values={base} />
+                  </div>
+                  <small>
+                    {result
+                      ? `${base.length} ${result.params?.granularity} periods`
+                      : "Run a model to see your outlook"}
+                  </small>
+                </article>
+                <article className="panel kpi">
+                  <span>Your planning scenario</span>
+                  <div>
+                    <strong>{result ? unit + compact(projected) : "—"}</strong>
+                    <span className="change">
+                      {result
+                        ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%`
+                        : "—"}
+                    </span>
+                  </div>
+                  <small>Adjustment relative to model forecast</small>
+                </article>
+                <article className="panel kpi">
+                  <span>Model validation</span>
+                  <div>
+                    <strong>
+                      {result?.diagnostics?.mase != null
+                        ? result.diagnostics.mase.toFixed(2)
+                        : result?.weights
+                          ? Object.keys(result.weights).length
+                          : "—"}
+                    </strong>
+                    <span className="submetric">
+                      {result?.weights ? "models" : "MASE"}
+                    </span>
+                  </div>
+                  <small>
+                    {result?.weights
+                      ? "Contributing ensemble members"
+                      : "Below 1.0: error below seasonal reference"}
+                  </small>
+                </article>
+              </div>
+              <section className="panel forecast-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>
+                      Sales outlook{" "}
+                      <span className="tag">
+                        {result?.params?.granularity || "monthly"}
+                      </span>
+                    </h2>
+                    <p>
+                      {result?.forecast?.spec ||
+                        "Your history, with a forward-looking perspective."}
+                    </p>
+                  </div>
+                  <div className="legend">
+                    <span>
+                      <i className="actual" />
+                      Actual / aggregated
+                    </span>
+                    <span>
+                      <i className="forecast" />
+                      Forecast
+                    </span>
+                    <span>
+                      <i className="range" />
+                      Model range
+                    </span>
+                  </div>
+                </div>
+                {busy && (
+                  <div className="progress" role="status">
+                    <span />
+                    Fitting the selected model. Ensemble validation can take
+                    several minutes.
+                  </div>
+                )}
+                <ForecastChart
+                  history={shownHistory}
+                  forecast={result?.forecast}
+                  scenario={scenario}
+                  onChange={setScenario}
+                  unit={unit}
+                />
+                <div className="chart-footer">
+                  <span>
+                    ⓘ{" "}
+                    {result?.allocation_note ||
+                      "Source: monthly sales orders. Forecasts are planning estimates."}
+                  </span>
+                  <span>
+                    {result
+                      ? "Drag forecast points to explore a scenario."
+                      : "Select a model below, then run your forecast."}
+                  </span>
+                </div>
+                {result && (
+                  <div className="scenario-control">
+                    <label htmlFor="adjust">
+                      Scenario adjustment{" "}
+                      <b>
+                        {adjust > 0 ? "+" : ""}
+                        {adjust}%
+                      </b>
+                    </label>
+                    <input
+                      id="adjust"
+                      type="range"
+                      min="-50"
+                      max="100"
+                      value={adjust}
+                      onChange={(e) => {
+                        const a = +e.target.value;
+                        setAdjust(a);
+                        setScenario(base.map((v) => v * (1 + a / 100)));
+                      }}
+                    />
+                    <button
+                      className="text-button"
+                      onClick={() => {
+                        setScenario(base);
+                        setAdjust(0);
+                      }}
+                    >
+                      Reset to model
+                    </button>
+                    <span>Scenario edits do not retrain the model.</span>
+                  </div>
+                )}
+              </section>
+              <div className="bottom-grid">
+                <section className="panel model-panel">
+                  <div className="section-heading">
+                    <div>
+                      <h2>Choose your forecasting model</h2>
+                      <p>
+                        Start with a baseline, or compare the full ensemble.
+                      </p>
+                    </div>
+                    <span className="small-label">06 MODELS</span>
+                  </div>
+                  <div className="model-grid">
+                    {models.map((m, i) => (
+                      <button
+                        disabled={busy}
+                        key={m.id}
+                        onClick={() => setModel(m.id)}
+                        className={`model-card ${model === m.id ? "selected" : ""}`}
+                        aria-pressed={model === m.id}
+                      >
+                        <div>
+                          <span className="model-number">0{i + 1}</span>
+                          <span className="radio" />
+                        </div>
+                        <strong>{m.name}</strong>
+                        <small>{m.desc}</small>
+                        <span className="model-status">
+                          {model === m.id
+                            ? "Selected for next run"
+                            : "Select model"}{" "}
+                          →
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+                <section className="panel notes">
+                  <div className="section-heading">
+                    <h2>Planning notes</h2>
+                    <span>↗</span>
+                  </div>
+                  <div>
+                    <span className="note-number">01</span>
+                    <h3>Start at the right level</h3>
+                    <p>
+                      Explore an item, customer, or industry. Combine filters to
+                      make the forecast specific to your plan.
+                    </p>
+                  </div>
+                  <div>
+                    <span className="note-number">02</span>
+                    <h3>Keep uncertainty visible</h3>
+                    <p>
+                      The shaded range reflects model uncertainty. Longer
+                      horizons carry more uncertainty.
+                    </p>
+                  </div>
+                  <div>
+                    <span className="note-number">03</span>
+                    <h3>Make assumptions explicit</h3>
+                    <p>
+                      Drag a point or adjust the scenario. Export both the
+                      original forecast and your planning values.
+                    </p>
+                  </div>
+                </section>
+              </div>
+              {result?.forecast && (
+                <section className="panel detail-table">
+                  <div className="section-heading">
+                    <h2>Period-by-period plan</h2>
+                    <span className="small-label">EDITABLE SCENARIO</span>
+                  </div>
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Period</th>
+                          <th>Model forecast</th>
+                          <th>Lower bound</th>
+                          <th>Upper bound</th>
+                          <th>Planning scenario</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.forecast.months.map((m, i) => (
+                          <tr key={m}>
+                            <td>{date(m)}</td>
+                            <td>
+                              {unit}
+                              {compact(base[i])}
+                            </td>
+                            <td>
+                              {unit}
+                              {compact(result.forecast!.lower_90[i])}
+                            </td>
+                            <td>
+                              {unit}
+                              {compact(result.forecast!.upper_90[i])}
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                aria-label={`Scenario for ${m}`}
+                                value={Math.round(scenario[i] || 0)}
+                                onChange={(e) => {
+                                  const v = Number(e.target.value);
+                                  if (Number.isFinite(v)) {
+                                    const next = [...scenario];
+                                    next[i] = Math.max(0, v);
+                                    setScenario(next);
+                                  }
+                                }}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+            </>
+          )}
+          {view === "models" && (
+            <section className="panel detail-table">
+              <div className="section-heading">
+                <div>
+                  <h2>Model comparison</h2>
+                  <p>
+                    {result?.weight_method ||
+                      "Run an ensemble forecast to compare models on matching chronological windows."}
+                  </p>
+                </div>
+                <button
+                  className="secondary"
+                  onClick={() => {
+                    setModel("ensemble");
+                    setView("forecast");
+                  }}
+                >
+                  Configure ensemble →
                 </button>
               </div>
-            </div>
-
-            {/* SARIMA Lab Results */}
-            {(labModel === 'sarima') && (
-              <>
-                {labResult.status === 'idle' && (
-                  <div className="panel">
-                    <div className="chart-loading">Configure a run above and hit "Run forecast".</div>
-                  </div>
-                )}
-
-                {labResult.status === 'running' && (
-                  <div className="panel">
-                    <div className="chart-loading">Fitting SARIMA candidates — this takes 40–90 seconds…</div>
-                  </div>
-                )}
-
-                {labResult.status === 'insufficient_history' && (
-                  <div className="panel">
-                    <div className="chart-loading">{labResult.detail ?? labResult.message}</div>
-                  </div>
-                )}
-
-                {(labResult.status === 'error' || labResult.status === 'already_running') && (
-                  <div className="panel">
-                    <div className="chart-loading">
-                      {labResult.message ?? 'Another run is already in progress — wait for it to finish.'}
-                    </div>
-                  </div>
-                )}
-
-                {labResult.status === 'ok' && labResult.forecast && (
-                  <>
-                    <div className="panel">
-                      <div className="panel-header">
-                        <div>
-                          <h2>{labResult.forecast.series}</h2>
-                          <p>
-                            {labResult.forecast.spec} · {labResult.forecast.horizon}-month forecast from{' '}
-                            {labResult.forecast.months.length > 0 ? labResult.forecast.months[0] : '—'}
-                          </p>
-                        </div>
-                      </div>
-
-                      <SarimaForecastChart
-                        history={filteredSales}
-                        forecast={labResult.forecast}
-                        valueCol={labValueCol}
-                      />
-
-                      <div className="forecast-meta">
-                        <div>
-                          <strong>
-                            {labValueCol === 'revenue' ? '฿' : ''}
-                            {labResult.forecast.annual_total.toLocaleString(undefined, {
-                              maximumFractionDigits: 0,
-                            })}
-                            {labValueCol === 'actual_units' ? ' units' : ''}
-                          </strong>
-                          <span>Forecast total ({labResult.forecast.horizon}mo)</span>
-                        </div>
-
-                        <div>
-                          <strong>
-                            {labResult.forecast.annual_yoy_pct !== null
-                              ? `${labResult.forecast.annual_yoy_pct > 0 ? '+' : ''}${labResult.forecast.annual_yoy_pct}%`
-                              : '—'}
-                          </strong>
-                          <span>YoY vs prior fiscal year</span>
-                        </div>
-
-                        <div>
-                          <strong className={labResult.forecast.plausibility_ok ? 'positive' : 'negative'}>
-                            {labResult.forecast.plausibility_ok ? 'Passed' : 'Flagged'}
-                          </strong>
-                          <span>Plausibility screen</span>
-                        </div>
-                      </div>
-
-                      {!labResult.forecast.plausibility_ok && labResult.forecast.plausibility_detail && (
-                        <div className="forecast-caveat">{labResult.forecast.plausibility_detail}</div>
-                      )}
-                    </div>
-
-                    <div className="panel">
-                      <div className="panel-header">
-                        <div>
-                          <h2>Validation</h2>
-                          <p>SARIMA vs seasonal-naive baseline, walk-forward</p>
-                        </div>
-                      </div>
-
-                      <div className="lab-diag-table">
-                        <div className="lab-diag-row lab-diag-header">
-                          <span>Scheme</span>
-                          <span>SARIMA</span>
-                          <span>Naive</span>
-                          <span>Beats naive?</span>
-                          <span>Significant?</span>
-                        </div>
-
-                        {(['wf1', 'wf12'] as const).map((scheme) => {
-                          const d = labResult.diagnostics?.[scheme]
-                          if (!d) return null
-
-                          return (
-                            <div className="lab-diag-row" key={scheme}>
-                              <span>{scheme === 'wf1' ? 'WF1 (1-month)' : 'WF12 (12-month)'}</span>
-                              <span>{d.SARIMA ? `${d.SARIMA.accuracy_pct}%` : '—'}</span>
-                              <span>{d.SeasonalNaive ? `${d.SeasonalNaive.accuracy_pct}%` : '—'}</span>
-                              <span className={d.beats_naive ? 'positive' : 'negative'}>
-                                {d.beats_naive ? 'Yes' : 'No'}
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Model</th>
+                      <th>Status</th>
+                      <th>CV MASE</th>
+                      <th>Folds</th>
+                      <th>Weight</th>
+                      <th>Outlook</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {models
+                      .filter((m) => m.id !== "ensemble")
+                      .map((m) => {
+                        const r = comparison[m.id];
+                        return (
+                          <tr key={m.id}>
+                            <td>
+                              <strong>{m.name}</strong>
+                              <small>{r?.message || m.desc}</small>
+                            </td>
+                            <td>
+                              <span
+                                className={`tag ${r?.status === "ok" ? "good" : ""}`}
+                              >
+                                {r?.status || "Not run"}
                               </span>
-                              <span>
-                                {d.vs_baseline?.distinguishable === null ||
-                                d.vs_baseline?.distinguishable === undefined
-                                  ? '—'
-                                  : d.vs_baseline.distinguishable
-                                  ? 'Yes'
-                                  : 'No'}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
-
-                      <div className="accuracy-row">
-                        <span>Ljung-Box residual check</span>
-                        <strong className={labResult.diagnostics?.residuals_clean ? 'positive' : 'negative'}>
-                          {labResult.diagnostics?.ljung_box_p !== null &&
-                          labResult.diagnostics?.ljung_box_p !== undefined
-                            ? `p=${labResult.diagnostics.ljung_box_p} — ${
-                                labResult.diagnostics.residuals_clean ? 'clean' : 'autocorrelated'
-                              }`
-                            : '—'}
-                        </strong>
-                      </div>
-                    </div>
-
-                                        {((labResult.data_anomalies && labResult.data_anomalies.length > 0) ||
-                      (labResult.warnings && labResult.warnings.length > 0)) && (
-                      <div className="panel">
-                        <div className="panel-header">
-                          <div>
-                            <h2>Notes</h2>
-                            <p>Data anomalies and engine warnings from this run</p>
-                          </div>
-                        </div>
-
-                        {labResult.data_anomalies?.map((a, i) => (
-                          <div className="insight" key={`anom-${i}`}>
-                            <div className="insight-icon warning-icon">!</div>
-                            <div>
-                              <strong>Data anomaly</strong>
-                              <p>{a.message}</p>
-                            </div>
-                          </div>
+                            </td>
+                            <td>{r?.validation?.mase?.toFixed(3) || "—"}</td>
+                            <td>{r?.validation?.folds ?? "—"}</td>
+                            <td>
+                              {result?.weights?.[m.id] != null
+                                ? `${(result.weights[m.id] * 100).toFixed(1)}%`
+                                : "—"}
+                            </td>
+                            <td>
+                              <Spark values={r?.forecast?.point || []} />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="table-note">
+                MASE is measured in original units against a seasonal-naive
+                scale. Validation uses expanding monthly windows. Weighted
+                bounds are approximate and are not a calibrated ensemble
+                interval.
+              </p>
+            </section>
+          )}
+          {view === "demand" && (
+            <>
+              <section className="panel demand-intro">
+                <span className="tag">MODEL EXPORT REQUIRED</span>
+                <h2>Ready for the next layer of demand intelligence.</h2>
+                <p>
+                  {classifier?.message ||
+                    "Loading classifier deployment status…"}
+                </p>
+              </section>
+              <section className="panel controls">
+                <div className="control selection">
+                  <label htmlFor="classifier-item">Item / SKU</label>
+                  <input
+                    id="classifier-item"
+                    list="classifier-items"
+                    placeholder="Search item code or leave blank for all"
+                    value={classifierItem}
+                    onChange={(e) => setClassifierItem(e.target.value)}
+                  />
+                  <datalist id="classifier-items">
+                    {options?.dimensions.item.map((v) => (
+                      <option key={v} value={v} />
+                    ))}
+                  </datalist>
+                </div>
+                <button
+                  className="primary"
+                  disabled={classifierBusy}
+                  onClick={predictDemand}
+                >
+                  {classifierBusy ? "Checking…" : "Check demand"}
+                </button>
+              </section>
+              {classifierResults.map((r) => (
+                <section className="panel detail-table" key={r.model}>
+                  <div className="section-heading">
+                    <h2>
+                      {r.model === "nn" ? "High demand" : "Sold / not sold"}
+                    </h2>
+                    <span className="tag">{r.status}</span>
+                  </div>
+                  {r.message && <p className="table-note">{r.message}</p>}
+                  {r.predictions.length > 0 && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Item</th>
+                          <th>Probability</th>
+                          <th>Review</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {r.predictions.slice(0, 100).map((p) => (
+                          <tr key={p.item}>
+                            <td>{p.item}</td>
+                            <td>
+                              <meter min="0" max="1" value={p.probability} />{" "}
+                              {(p.probability * 100).toFixed(1)}%
+                            </td>
+                            <td>{p.review ? "Borderline · review" : "—"}</td>
+                          </tr>
                         ))}
-
-                        {labResult.warnings?.map((w, i) => (
-                          <div className="insight" key={`warn-${i}`}>
-                            <div className="insight-icon neutral-icon">◆</div>
-                            <div>
-                              <strong>{w.kind}</strong>
-                              <p>{w.message}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-
-            {/* RandomForest Lab Results */}
-            {(labModel === 'randomforest') && (
-              <>
-                {labRandomforestResult.status === 'idle' && (
-                  <div className="panel">
-                    <div className="chart-loading">Configure a run above and hit "Run forecast".</div>
-                  </div>
-                )}
-
-                {labRandomforestResult.status === 'running' && (
-                  <div className="panel">
-                    <div className="chart-loading">Running RandomForest forecast…</div>
-                  </div>
-                )}
-
-                {labRandomforestResult.status === 'insufficient_history' && (
-                  <div className="panel">
-                    <div className="chart-loading">{labRandomforestResult.detail ?? labRandomforestResult.message}</div>
-                  </div>
-                )}
-
-                {(labRandomforestResult.status === 'error' || labRandomforestResult.status === 'already_running') && (
-                  <div className="panel">
-                    <div className="chart-loading">
-                      {labRandomforestResult.message ?? 'Another run is already in progress — wait for it to finish.'}
+                      </tbody>
+                    </table>
+                  )}
+                  {r.diagnostics && (
+                    <pre className="table-note">
+                      {JSON.stringify(r.diagnostics, null, 2)}
+                    </pre>
+                  )}
+                </section>
+              ))}
+              <div className="classifier-grid">
+                {classifier?.models.map((m) => (
+                  <section className="panel classifier-card" key={m.name}>
+                    <span className="small-label">SEPTEMBER MODEL</span>
+                    <h2>{m.name}</h2>
+                    <div className="probability">
+                      —<small>Probability unavailable</small>
                     </div>
-                  </div>
+                    <p>Target: {m.target}</p>
+                    <span className="tag">{m.status}</span>
+                  </section>
+                ))}
+              </div>
+            </>
+          )}
+          {view === "data" && (
+            <section className="panel detail-table">
+              <div className="section-heading">
+                <div>
+                  <h2>Connected dimensions</h2>
+                  <p>MySQL · Sales_Order_Merged</p>
+                </div>
+                <span className="tag">MONTHLY SOURCE</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Dimension</th>
+                    <th>Available values</th>
+                    <th>Coverage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(options?.dimensions || {}).map(
+                    ([d, values]) => (
+                      <tr key={d}>
+                        <td>{titles[d]}</td>
+                        <td>{values.length.toLocaleString()}</td>
+                        <td>
+                          {values.length
+                            ? "Available"
+                            : "No mapping in source schema"}
+                        </td>
+                      </tr>
+                    ),
+                  )}
+                </tbody>
+              </table>
+              <div className="data-notes">
+                <h3>Data assumptions</h3>
+                <p>
+                  Daily and weekly planning views allocate monthly totals across
+                  calendar days. They do not represent daily transaction
+                  observations.
+                </p>
+                <p>
+                  Order lines use the existing composite deduplication rule.
+                  Confirm that rule with the source-system owner before relying
+                  on reported totals.
+                </p>
+                <p>
+                  Yearly and quarterly boundaries use calendar periods. Boundary
+                  periods can be partial.
+                </p>
+                {result?.data_fingerprint && (
+                  <p className="fingerprint">
+                    Current forecast data fingerprint: {result.data_fingerprint}
+                  </p>
                 )}
-
-                {labRandomforestResult.status === 'ok' && labRandomforestResult.forecast && (
-                  <>
-                    <div className="panel">
-                      <div className="panel-header">
-                        <div>
-                          <h2>{labRandomforestResult.forecast.series}</h2>
-                          <p>
-                            {labRandomforestResult.forecast.spec} · {labRandomforestResult.forecast.horizon}-month forecast from{' '}
-                            {labRandomforestResult.forecast.months.length > 0 ? labRandomforestResult.forecast.months[0] : '—'}
-                          </p>
-                        </div>
-                      </div>
-
-                      <SarimaForecastChart
-                        history={filteredSales}
-                        forecast={labRandomforestResult.forecast}
-                        valueCol={labValueCol}
-                      />
-
-                      <div className="forecast-meta">
-                        <div>
-                          <strong>
-                            {labValueCol === 'revenue' ? '฿' : ''}
-                            {labRandomforestResult.forecast.annual_total.toLocaleString(undefined, {
-                              maximumFractionDigits: 0,
-                            })}
-                            {labValueCol === 'actual_units' ? ' units' : ''}
-                          </strong>
-                          <span>Forecast total ({labRandomforestResult.forecast.horizon}mo)</span>
-                        </div>
-
-                        <div>
-                          <strong>
-                            {labRandomforestResult.forecast.annual_yoy_pct !== null
-                              ? `${labRandomforestResult.forecast.annual_yoy_pct > 0 ? '+' : ''}${labRandomforestResult.forecast.annual_yoy_pct}%`
-                              : '—'}
-                          </strong>
-                          <span>YoY vs prior fiscal year</span>
-                        </div>
-
-                        <div>
-                          <strong>{labRandomforestResult.diagnostics?.holdout_mae !== undefined && labRandomforestResult.diagnostics.holdout_mae !== null
-                            ? Math.round(labRandomforestResult.diagnostics.holdout_mae)
-                            : '—'}</strong>
-                          <span>Holdout MAE</span>
-                        </div>
-
-                        <div>
-                          <strong>{labRandomforestResult.diagnostics?.holdout_rmse !== undefined && labRandomforestResult.diagnostics.holdout_rmse !== null
-                            ? Math.round(labRandomforestResult.diagnostics.holdout_rmse)
-                            : '—'}</strong>
-                          <span>Holdout RMSE</span>
-                        </div>
-
-                        <div>
-                          <strong>{labRandomforestResult.diagnostics?.holdout_mape !== undefined && labRandomforestResult.diagnostics.holdout_mape !== null
-                            ? labRandomforestResult.diagnostics.holdout_mape.toFixed(1) + '%'
-                            : '—'}</strong>
-                          <span>Holdout MAPE</span>
-                        </div>
-
-                        {/* Accuracy metric */}
-                        <div>
-                          <strong>{labRandomforestResult.diagnostics?.holdout_mape !== undefined && labRandomforestResult.diagnostics.holdout_mape !== null
-                            ? Math.max(0, 100 - labRandomforestResult.diagnostics.holdout_mape).toFixed(1) + '%'
-                            : '—'}</strong>
-                          <span>Accuracy (estimated)</span>
-                        </div>
-                      </div>
-
-                      {!labRandomforestResult.forecast.plausibility_ok && labRandomforestResult.forecast.plausibility_detail && (
-                        <div className="forecast-caveat">{labRandomforestResult.forecast.plausibility_detail}</div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-
-            {/* LSTM Lab Results */}
-            {(labModel === 'lstm') && (
-              <>
-                {labLstmResult.status === 'idle' && (
-                  <div className="panel">
-                    <div className="chart-loading">Configure a run above and hit "Run forecast".</div>
-                  </div>
-                )}
-
-                {labLstmResult.status === 'running' && (
-                  <div className="panel">
-                    <div className="chart-loading">Running LSTM forecast…</div>
-                  </div>
-                )}
-
-                {labLstmResult.status === 'insufficient_history' && (
-                  <div className="panel">
-                    <div className="chart-loading">{labLstmResult.detail ?? labLstmResult.message}</div>
-                  </div>
-                )}
-
-                {(labLstmResult.status === 'error' || labLstmResult.status === 'already_running') && (
-                  <div className="panel">
-                    <div className="chart-loading">
-                      {labLstmResult.message ?? 'Another run is already in progress — wait for it to finish.'}
-                    </div>
-                  </div>
-                )}
-
-                {labLstmResult.status === 'ok' && labLstmResult.forecast && (
-                  <>
-                    <div className="panel">
-                      <div className="panel-header">
-                        <div>
-                          <h2>{labLstmResult.forecast.series}</h2>
-                          <p>
-                            {labLstmResult.forecast.spec} · {labLstmResult.forecast.horizon}-month forecast from{' '}
-                            {labLstmResult.forecast.months.length > 0 ? labLstmResult.forecast.months[0] : '—'}
-                          </p>
-                        </div>
-                      </div>
-
-                      <SarimaForecastChart
-                        history={filteredSales}
-                        forecast={labLstmResult.forecast}
-                        valueCol={labValueCol}
-                      />
-
-                      <div className="forecast-meta">
-                        <div>
-                          <strong>
-                            {labValueCol === 'revenue' ? '฿' : ''}
-                            {labLstmResult.forecast.annual_total.toLocaleString(undefined, {
-                              maximumFractionDigits: 0,
-                            })}
-                            {labValueCol === 'actual_units' ? ' units' : ''}
-                          </strong>
-                          <span>Forecast total ({labLstmResult.forecast.horizon}mo)</span>
-                        </div>
-
-                        <div>
-                          <strong>
-                            {labLstmResult.forecast.annual_yoy_pct !== null
-                              ? `${labLstmResult.forecast.annual_yoy_pct > 0 ? '+' : ''}${labLstmResult.forecast.annual_yoy_pct}%`
-                              : '—'}
-                          </strong>
-                          <span>YoY vs prior fiscal year</span>
-                        </div>
-
-                        <div>
-                          <strong>{labLstmResult.diagnostics?.holdout_mae !== undefined && labLstmResult.diagnostics.holdout_mae !== null
-                            ? Math.round(labLstmResult.diagnostics.holdout_mae)
-                            : '—'}</strong>
-                          <span>Holdout MAE</span>
-                        </div>
-
-                        <div>
-                          <strong>{labLstmResult.diagnostics?.holdout_rmse !== undefined && labLstmResult.diagnostics.holdout_rmse !== null
-                            ? Math.round(labLstmResult.diagnostics.holdout_rmse)
-                            : '—'}</strong>
-                          <span>Holdout RMSE</span>
-                        </div>
-
-                        <div>
-                          <strong>{labLstmResult.diagnostics?.holdout_mape !== undefined && labLstmResult.diagnostics.holdout_mape !== null
-                            ? labLstmResult.diagnostics.holdout_mape.toFixed(1) + '%'
-                            : '—'}</strong>
-                          <span>Holdout MAPE</span>
-                        </div>
-
-                        {/* Accuracy metric */}
-                        <div>
-                          <strong>{labLstmResult.diagnostics?.holdout_mape !== undefined && labLstmResult.diagnostics.holdout_mape !== null
-                            ? Math.max(0, 100 - labLstmResult.diagnostics.holdout_mape).toFixed(1) + '%'
-                            : '—'}</strong>
-                          <span>Accuracy (estimated)</span>
-                        </div>
-                      </div>
-
-                      {!labLstmResult.forecast.plausibility_ok && labLstmResult.forecast.plausibility_detail && (
-                        <div className="forecast-caveat">{labLstmResult.forecast.plausibility_detail}</div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-          </section>
-        )}
-      </main>
+              </div>
+            </section>
+          )}
+          <footer>
+            <span>
+              MITSUBISHI ELECTRIC <b>·</b> Sales intelligence
+            </span>
+            <span>Built for thoughtful planning.</span>
+          </footer>
+        </main>
+      </div>
     </div>
-  )
+  );
 }
-
-export default App

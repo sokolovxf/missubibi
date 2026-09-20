@@ -1564,23 +1564,13 @@ def _run(sales_df, month_col, value_col, horizon, fast, series_name, t0):
     months = sorted(df[mcol].unique())
     fys = _complete_fiscal_years(months)
     horizon = int(horizon or HORIZON)
-    need = CONFIG["MIN_TRAIN_MONTHS"] + horizon
-
-    if not fys:
-        return _insufficient(
-            "No complete fiscal year in the data.",
-            {"months_supplied": len(months),
-             "first_month": str(pd.Timestamp(months[0]).date()),
-             "last_month": str(pd.Timestamp(months[-1]).date()),
-             "fiscal_year_starts": pd.Timestamp(2000, FISCAL_START, 1).strftime("%B"),
-             "needed": f"at least {need} months spanning whole fiscal years"}, t0)
-
-    idx = pd.date_range(fy_start(fys[0]), periods=12 * len(fys), freq="MS", name="month")
+    # Retain partial fiscal years; prediction must start after the last observed month.
+    # Validation length is bounded by available history, independent of requested horizon.
+    need = CONFIG["MIN_TRAIN_MONTHS"] + 1
+    idx = pd.date_range(months[0], months[-1], freq="MS", name="month")
     if len(idx) < need:
-        return _insufficient(
-            f"Only {len(idx)} months of complete fiscal years; walk-forward validation needs "
-            f"at least {need} (MIN_TRAIN_MONTHS {CONFIG['MIN_TRAIN_MONTHS']} + horizon {horizon}).",
-            {"complete_fiscal_years": fys, "months_available": len(idx), "months_needed": need}, t0)
+        return _insufficient(f"Need at least {need} monthly observations.",
+                             {"months_available": len(idx), "months_needed": need}, t0)
 
     FULL_INDEX = idx
     WD_FULL = working_days(FULL_INDEX)
@@ -1596,7 +1586,7 @@ def _run(sales_df, month_col, value_col, horizon, fast, series_name, t0):
     scale = naive_scale_fixed(s, CONFIG["MIN_TRAIN_MONTHS"])
     # LOFO is advisory only (it trains on months after the ones it predicts), so it is
     # not run here - it must never reach a production number.
-    cfg = dict(CONFIG, RUN_LOFO=False, WF12_HORIZON=horizon)
+    cfg = dict(CONFIG, RUN_LOFO=False, WF12_HORIZON=min(12, len(idx)-CONFIG["MIN_TRAIN_MONTHS"]))
     folds = make_folds(FULL_INDEX, fys, cfg)
 
     rows, preds = [], {}
@@ -1631,7 +1621,7 @@ def _run(sales_df, month_col, value_col, horizon, fast, series_name, t0):
             pair_rows.append({"series": series_name, "model": model, "scheme": scheme,
                               "fold": fold, "month": dt, "h": h,
                               "actual": float(s.loc[dt]), "pred": float(pv)})
-    resid_df = pd.DataFrame(pair_rows)
+    resid_df = pd.DataFrame(pair_rows, columns=["series", "model", "scheme", "fold", "month", "h", "actual", "pred"])
     resid_df["err"] = resid_df["actual"] - resid_df["pred"]
 
     # ---- diagnostics ------------------------------------------------------------------

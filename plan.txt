@@ -1,0 +1,331 @@
+# Implementation audit — 20 September 2026
+
+The original plan below is retained for context. It is not a completion checklist.
+See docs/IMPLEMENTATION_AUDIT.md for verified implementation status and blockers,
+and backend/PLANNING.md for the current API, runtime, and classifier export contract.
+
+Implemented: shared MySQL adapter; five-model planning API and ensemble; item and
+combined filters; all planning frequencies; model correctness fixes; redesigned
+interactive dashboard; inference-only classifier wrappers; forecast-run registry;
+and scheduled refresh of previously requested forecast configurations.
+
+Not fully complete: trained NN/TR exports and production training pipeline;
+leakage-safe classifier exogenous histories; vendor mapping; exact full notebook
+parity; fitted-estimator deployment rollback and production A/B traffic routing.
+Daily/weekly values are allocated monthly estimates, not daily observed forecasts.
+
+---
+
+# Comprehensive Missubibi Forecasting System - Implementation Plan
+
+## Context
+
+The user wants to build a "super advanced" forecasting system that:
+- Integrates ALL models from the Sep16th folder (SARIMA, RF, LSTM, NN, TR)
+- Supports multiple dimensions: Company, Product, Customer, Industry, Vendor
+- Supports multiple granularities: Daily, Weekly, Monthly, Quarterly, Yearly
+- Provides individual model forecasts + ensemble (weighted average)
+- Uses real SQL data with a universal adapter so schema changes don't break models
+- Keeps classification models (NN, TR) as separate features/exogenous signals
+
+## Current State
+
+**✅ Already Integrated (Forecasting):**
+- SARIMA Engine (`backend/app/services/sarima_engine.py`) - statistical baseline
+- XGBoost Engine (`backend/app/services/xgboost_engine.py`) - gradient boosting (lib issue on Mac)
+- RandomForest Engine (`backend/app/services/randomforest_engine.py`) - ensemble trees
+- LSTM Engine (`backend/app/services/lstm_engine.py`) - deep learning (needs log-mode fix deployed)
+
+**✅ Already Integrated (Frontend):**
+- Forecast Lab with SARIMA/RF/LSTM model selector
+- Model comparison panel showing all 3 forecasts side-by-side
+- Background job polling pattern for long-running forecasts
+
+**❌ Not Integrated (Classification - Different Problem):**
+- NN Classifier (`nn_engine_rev9`) - TF/Keras, predicts P(High Demand) per item/month
+- TR Classifier (`tr_engine_rev8`) - Tabular Transformer, predicts P(Sold) per item/month
+
+**❌ Missing:**
+- Trend Regression forecaster (simple baseline)
+- Ensemble endpoint (weighted average)
+- Industry/Vendor dimensions
+- Weekly/Daily/Quarterly/Yearly granularities
+- Universal data adapter layer
+- Demand Classifier page for inventory team
+
+---
+
+## Requirements & Constraints
+
+### Functional Requirements
+1. **Forecasting Stack**: 5 forecasters (SARIMA, XGB, RF, LSTM, TrendReg) + Ensemble
+2. **Dimensions**: total, product, customer, industry, vendor
+3. **Granularities**: monthly, weekly, daily, quarterly, yearly
+4. **Ensemble**: Learned weights per dimension/granularity from CV
+5. **Classifiers as Features**: NN/TR → exogenous signals for forecasters
+6. **Demand Classifier Page**: Separate UI for item-level predictions
+
+### Non-Functional Requirements
+1. **Universal Data Adapter**: Single point of SQL schema coupling
+2. **Schema Resilience**: New data → only adapter changes, models auto-adapt
+3. **Performance**: Background jobs + caching (existing pattern)
+4. **Type Safety**: Consistent ForecastResult interface across all engines
+
+### Technical Constraints
+- MySQL backend via SQLAlchemy (existing `get_sales_data()`)
+- FastAPI background threads for long runs (existing pattern)
+- React + Vite frontend (existing)
+- Python 3.12, PyTorch for LSTM, statsmodels for SARIMA
+- XGBoost has lib issue on Mac (known, document workaround)
+
+---
+
+## Implementation Plan
+
+### Phase 1: Foundation - Universal Data Adapter (Week 1)
+
+**Files to Create:**
+- `backend/app/data/adapter.py` - New universal data layer
+- `backend/app/data/__init__.py` - Export adapter
+
+**Files to Modify:**
+- `backend/app/data/sales_data.py` - Refactor to use adapter
+- `backend/app/services/analytics.py` - Use adapter for all forecast functions
+
+**Adapter Interface:**
+```python
+class DataAdapter:
+    def get_monthly_series(self, dimension, dimension_value, value_col) -> pd.DataFrame
+    def get_weekly_series(self, ...) -> pd.DataFrame
+    def get_daily_series(self, ...) -> pd.DataFrame
+    def get_quarterly_series(self, ...) -> pd.DataFrame
+    def get_yearly_series(self, ...) -> pd.DataFrame
+    def get_dimension_values(self, dimension) -> List[str]
+    def get_industries(self) -> List[str]
+    def get_vendors(self) -> List[str]
+```
+
+**SQL Strategy:**
+- Single source of truth: `Sales_Order_Merged` + `Item` + `Customer` joins
+- Dimension columns: `product_category_2` (product), `company_name` (customer), `fa_sub_industries` (industry)
+- Vendor: Not in current schema → add placeholder, document need for vendor mapping table
+- Granularity: Resample monthly data (weekly/daily via interpolation, quarterly/yearly via aggregation)
+
+### Phase 2: Missing Forecasting Engines (Week 1-2)
+
+#### 2.1 Trend Regression Engine
+**File:** `backend/app/services/trend_engine.py`
+
+Simple, interpretable baseline:
+- OLS: `revenue ~ time + seasonal_dummies(month)`
+- Optional: Fourier terms for seasonality
+- Extrapolates trend + seasonal pattern
+- Same interface as other engines (`run_forecast()`)
+
+#### 2.2 Ensemble Engine
+**File:** `backend/app/services/ensemble_engine.py`
+
+```python
+def run_ensemble_forecast(
+    sales_df,
+    dimension="total",
+    dimension_value=None,
+    value_col="revenue",
+    horizon=12,
+    fast=True,
+    weights=None,  # dict model->weight, or None for learned
+) -> ForecastResult
+```
+
+- Runs all 5 forecasters in parallel (thread pool)
+- Weights: Default equal (0.2 each), or learned from walk-forward CV per dimension
+- Returns weighted average + individual forecasts + model weights used
+- Same `ForecastResult` format
+
+#### 2.3 LSTM Fix Deployment
+- Restart backend with `mode = "log"` change already made
+- Verify forecasts are in billions, not 0.09-1.02 range
+
+### Phase 3: Classification Engines as Features (Week 2)
+
+**Files to Create:**
+- `backend/app/services/nn_classifier.py` - Wrapper for nn_engine_rev9 logic
+- `backend/app/services/tr_classifier.py` - Wrapper for tr_engine_rev8 logic
+
+**Integration Point (in analytics.py):**
+```python
+def get_classifier_signals(next_month_date) -> dict:
+    """Returns exogenous features for forecasters."""
+    return {
+        "nn_high_demand_count": count_items_nn_p_high_gt_0_7,
+        "tr_sold_count": count_items_tr_p_sold_gt_0_7,
+        "nn_high_demand_items": [...],  # top items
+        "tr_sold_items": [...],
+    }
+```
+
+**Usage:**
+- Call before forecaster runs
+- Pass signals as exogenous regressors to SARIMA/XGB/RF/LSTM
+- Cache classifier predictions (they're fast once models trained)
+
+**Note:** Full NN/TR training pipelines are in Colab notebooks. For production:
+- Export trained models (TF SavedModel / Keras .h5)
+- Load in engine, run inference only
+- Retrain monthly via scheduled job
+
+### Phase 4: Multi-Dimensional & Multi-Granularity (Week 2-3)
+
+#### 4.1 Analytics Updates
+**File:** `backend/app/services/analytics.py`
+
+Add to all `get_*_forecast_for()` functions:
+- `granularity: str = "monthly"` parameter
+- `dimension: str` now includes "industry", "vendor"
+- Delegate to adapter for correct granularity series
+
+#### 4.2 Routes Updates
+**File:** `backend/app/api/routes.py`
+
+Add to all forecast endpoints:
+- `granularity` parameter in request models
+- `industry`, `vendor` in dimension enum
+- New ensemble endpoints:
+  - `POST /ensemble/forecast/run`
+  - `GET /ensemble/forecast?job_id=...`
+- Classifier endpoints:
+  - `POST /classifier/nn/predict` (item-level)
+  - `POST /classifier/tr/predict` (item-level)
+  - `GET /classifier/signals` (exogenous features)
+
+#### 4.3 Engine Updates
+Each engine's `run_forecast()`:
+- Accept `granularity` parameter
+- Resample input series if needed (adapter handles this)
+- Fiscal year logic adapts to granularity
+
+### Phase 5: Frontend Integration (Week 3)
+
+**Files to Modify:**
+- `frontend/src/App.tsx`
+
+**Changes:**
+1. **Navigation**: Add "Demand Classifier" nav item
+2. **Forecast Panel**: Add "Ensemble" model card
+3. **Forecast Lab**: 
+   - Add granularity selector (Monthly/Weekly/Daily/Quarterly/Yearly)
+   - Add Industry/Vendor to dimension selector
+   - Add Ensemble to model selector
+4. **Demand Classifier Page** (new):
+   - Item search dropdown
+   - NN + TR probability gauges
+   - "Borderline" review queue
+   - Model diagnostics (AUC, accuracy, confusion matrix)
+5. **Model Comparison**: Show ensemble weights, individual model metrics
+
+### Phase 6: Advanced Features (Week 3-4)
+
+#### 6.1 Learned Ensemble Weights
+- Run walk-forward CV for each dimension/granularity
+- Optimize weights to minimize WF12 MASE
+- Store weights in JSON/config, load at startup
+- Re-compute monthly with new data
+
+#### 6.2 Forecast Scenarios
+- Best case: min(lower_90 across models)
+- Base case: ensemble point forecast
+- Worst case: max(upper_90 across models)
+- Display as shaded fan chart
+
+#### 6.3 Auto-Retrain Scheduler
+- Cron job: monthly retrain all models
+- Invalidate caches on new data
+- Log performance drift
+
+#### 6.4 Model Registry
+- Version models with data fingerprint
+- Rollback capability
+- A/B testing framework
+
+---
+
+## Critical Files to Modify
+
+| File | Purpose |
+|------|---------|
+| `backend/app/data/adapter.py` | **NEW** - Universal data layer |
+| `backend/app/services/trend_engine.py` | **NEW** - Trend Regression forecaster |
+| `backend/app/services/ensemble_engine.py` | **NEW** - Weighted ensemble |
+| `backend/app/services/nn_classifier.py` | **NEW** - NN classifier wrapper |
+| `backend/app/services/tr_classifier.py` | **NEW** - TR classifier wrapper |
+| `backend/app/services/analytics.py` | Add granularity, industry, vendor, ensemble |
+| `backend/app/api/routes.py` | New endpoints for ensemble, classifiers, dimensions |
+| `frontend/src/App.tsx` | New page, selectors, ensemble display |
+
+---
+
+## Verification Strategy
+
+### Backend Tests
+```bash
+# Test each engine directly
+cd /Users/mac/Documents/Missubibi/backend
+python -c "from app.services.sarima_engine import run_forecast; from app.data.sales_data import get_sales_data; print(run_forecast(get_sales_data(), fast=True, horizon=3)['status'])"
+
+# Test adapter
+python -c "from app.data.adapter import DataAdapter; a=DataAdapter(); print(a.get_dimension_values('product')[:5])"
+
+# Test ensemble
+python -c "from app.services.ensemble_engine import run_ensemble_forecast; from app.data.sales_data import get_sales_data; print(run_ensemble_forecast(get_sales_data(), fast=True, horizon=3)['status'])"
+
+# Test API endpoints
+curl -X POST http://127.0.0.1:8100/api/ensemble/forecast/run -H "Content-Type: application/json" -d '{"job_id":"test","fast":true}'
+sleep 10
+curl http://127.0.0.1:8100/api/ensemble/forecast?job_id=test
+```
+
+### Frontend Tests
+1. Start frontend: `cd frontend && npm run dev`
+2. Open http://127.0.0.1:5174
+3. **Hard refresh** (Cmd+Shift+R)
+4. Verify:
+   - Sales Forecast page shows 4 model cards (SARIMA, RF, LSTM, Ensemble)
+   - Forecast Lab has granularity + industry/vendor selectors
+   - Demand Classifier page loads (separate nav item)
+   - Item search returns NN/TR probabilities
+
+### Data Change Simulation
+```bash
+# Simulate schema change by modifying adapter query
+# Verify: only adapter.py changes, no engine/frontend changes needed
+```
+
+---
+
+## Risk Mitigation
+
+| Risk | Mitigation |
+|------|------------|
+| XGBoost lib issue on Mac | Document `brew install libomp`; make XGB optional in ensemble |
+| NN/TR need TensorFlow | Separate venv or Docker for classifiers; inference only in main |
+| Data schema changes | Adapter pattern isolates all SQL |
+| Model retraining time | Background jobs + caching (existing); schedule nightly |
+| Ensemble weight stability | Regularization on weights; minimum weight floor (0.05) |
+
+---
+
+## Priority Order (If Time Constrained)
+
+1. **Must Have**: TrendReg + Ensemble + LSTM fix + Industry dimension
+2. **Should Have**: Weekly/Quarterly granularity + Classifier signals
+3. **Nice to Have**: Daily/Yearly + Demand Classifier page + Learned weights
+4. **Future**: Vendor dimension + Auto-retrain + Model registry + Scenarios
+
+---
+
+## Resolved Decisions
+
+1. **Vendor data**: SQL tables exist; wire directly. Vendor column may be absent → adapter returns empty list gracefully.
+2. **NN/TR models**: No exported models (.h5) yet. Build inference wrappers that load models if present, else return transparent mock/stub probabilities. Retrain monthly when a model file appears.
+3. **Retraining**: Automatic (scheduled + on new data / cache invalidation).
+4. **Ensemble weights**: Learned from day 1 — walk-forward CV per dimension/granularity, weight = inverse of WF error (MASE), floor at 0.05, regularized.

@@ -24,7 +24,9 @@ def get_dashboard_summary():
     return {
         "total_units": total_units,
         "total_revenue": total_revenue,
-        "forecast_accuracy": round(forecast_accuracy, 2),
+        "forecast_accuracy": None,
+        "baseline_accuracy": round(forecast_accuracy, 2),
+        "baseline_label": "Prior observed period; not model validation",
         "top_product": top_product,
     }
 

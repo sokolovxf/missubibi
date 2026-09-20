@@ -45,3 +45,6 @@ build/
 # OS temporary files
 *.tmp
 *.temp
+
+# Local model artifacts and forecast run records
+backend/var/

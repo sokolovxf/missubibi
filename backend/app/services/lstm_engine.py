@@ -415,9 +415,9 @@ def make_sequences(y, mode, params, lookback=None, use_capped=False):
                 continue
             target = y[t] - y[t - 1]
         elif mode == "log":
-            if y[t] <= 0:
+            if y[t] < 0:
                 continue
-            target = np.log(y[t])
+            target = np.log1p(y[t])
         elif mode == "blend":
             # Simple linear detrending
             trend = np.polyfit(np.arange(t), y[:t], 1)[0] * t + np.polyfit(np.arange(t), y[:t], 1)[1]
@@ -429,7 +429,7 @@ def make_sequences(y, mode, params, lookback=None, use_capped=False):
         if not np.isfinite(seq).all():
             continue
 
-        seqs.append(seq)
+        seqs.append(np.log1p(np.maximum(seq, 0)) if mode == "log" else seq)
         targets.append(target)
         positions.append(t)
 
@@ -557,6 +557,8 @@ def lstm_predict_recursive(models, y_history, horizon, mode, params, lookback=No
         if not np.isfinite(seq).all():
             break
 
+        if mode == "log":
+            seq = np.log1p(np.maximum(seq, 0))
         X_seq = seq.astype(np.float32).reshape(1, L, 1)
         X_stat = np.zeros((1, 1), dtype=np.float32)
 
@@ -566,7 +568,7 @@ def lstm_predict_recursive(models, y_history, horizon, mode, params, lookback=No
             prev = y[t - 1] if t > 0 and np.isfinite(y[t - 1]) else y_history[-1]
             preds[t] = prev + pred_scaled if np.isfinite(prev) else np.nan
         elif mode == "log":
-            preds[t] = np.exp(pred_scaled) if np.isfinite(pred_scaled) else np.nan
+            preds[t] = max(0.0, np.expm1(pred_scaled)) if np.isfinite(pred_scaled) else np.nan
         elif mode == "blend":
             # Add back trend (simplified)
             trend_val = np.polyfit(np.arange(len(y_history)), y_history, 1)[0] * t + np.polyfit(np.arange(len(y_history)), y_history, 1)[1]

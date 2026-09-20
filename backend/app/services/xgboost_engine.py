@@ -22,6 +22,7 @@ from a background task.
 from __future__ import annotations
 
 import time
+import contextlib
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -94,9 +95,9 @@ def _make_rolling_features(
     for window in windows:
         for func in agg_funcs:
             if func == "mean":
-                df[f"rmean_{window}"] = series.rolling(window).mean()
+                df[f"rmean_{window}"] = series.shift(1).rolling(window).mean()
             elif func == "std":
-                df[f"rstd_{window}"] = series.rolling(window).std()
+                df[f"rstd_{window}"] = series.shift(1).rolling(window).std()
     return df
 
 
@@ -151,7 +152,7 @@ def _prepare_forecast_features(
         # Return empty arrays if no valid features
         return pd.DataFrame(), np.array([]), []
 
-    X = features_clean.drop(columns=["target"])
+    X = features_clean.drop(columns=["target", "value"])
     y = features_clean["target"].values
     feature_names = X.columns.tolist()
 
@@ -223,7 +224,7 @@ def _forecast_recursive(
         y_pred = model.predict(features_df.values)[0]
         predictions.append(y_pred)
         # Update history with this prediction for the next iteration
-        hist = hist.append(pd.Series([y_pred], index=[next_date]))
+        hist = pd.concat([hist, pd.Series([y_pred], index=[next_date])])
 
     return np.array(predictions)
 
@@ -338,8 +339,9 @@ def run_forecast(
         #   - Then retrain on all data to forecast the next `horizon` months.
 
         # Holdout split
-        train_series = monthly_series.iloc[:-horizon]
-        holdout_series = monthly_series.iloc[-horizon:]
+        holdout_horizon = min(12, max(1, len(monthly_series)//5))
+        train_series = monthly_series.iloc[:-holdout_horizon]
+        holdout_series = monthly_series.iloc[-holdout_horizon:]
 
         # Prepare features for the training set
         # We'll use lag features: 1, 2, 3, 6, 12
@@ -386,7 +388,7 @@ def run_forecast(
         # We'll generate a recursive forecast for the holdout period.
         # We'll start with the training series and iteratively predict each point in the holdout.
         holdout_predictions = _forecast_recursive(
-            model, train_series, horizon, lags, rolling_windows, feature_names
+            model, train_series, holdout_horizon, lags, rolling_windows, feature_names
         )
 
         # If we couldn't generate predictions (e.g., not enough history for recursion), fall back to direct prediction
@@ -529,7 +531,7 @@ def run_forecast(
         # We'll use the same function as in sarima_engine.py? We'll copy a simplified version.
         def _fiscal_year_vec(dt, start_month=4):
             # Assuming fiscal year label is "start" (as in SARIMA engine)
-            return dt.dt.year - (dt.dt.month < start_month).astype(int)
+            return dt.year - (dt.month < start_month).astype(int)
 
         # We need a DatetimeIndex for the monthly series index
         months_idx = monthly_series.index

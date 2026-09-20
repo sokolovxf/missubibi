@@ -149,6 +149,7 @@ def _execute_randomforest_forecast(
     try:
         # Initialize configuration using local class
         config = RandomForestConfig()
+        config.FAST_MODE = fast
         if fast:
             config.RF_N_ITER = max(8, config.RF_N_ITER // 3)  # Reduce search for speed
             config.N_BOOT = max(1000, config.N_BOOT // 5)     # Reduce bootstrap samples
@@ -419,10 +420,7 @@ class DataPreparator:
                 "target": monthly[value_col].values,
                 "timestamps": monthly.index,
                 "fiscal_years_used": self._get_fiscal_years(monthly.index),
-                "forecast_fiscal_year": self._get_forecast_fiscal_year(
-                    len(monthly),
-                    self.config.WF12_HORIZON
-                ),
+                "forecast_fiscal_year": (monthly.index[-1] + pd.offsets.MonthBegin()).year - int((monthly.index[-1] + pd.offsets.MonthBegin()).month < self.config.FISCAL_START_MONTH),
                 "anomalies": [],  # Simplified for service use
                 "warnings": []
             }
@@ -452,7 +450,7 @@ class DataPreparator:
     def _get_forecast_fiscal_year(self, n_historical, horizon):
         """Get the fiscal year for the forecast period."""
         # Simplified - in reality would calculate based on last historical date
-        return 2025  # Placeholder
+        return None  # Derived from the actual final timestamp in prepare().
 
 
 class FeatureEngineer:
@@ -484,11 +482,11 @@ class FeatureEngineer:
             for window in [3, 6, 12]:
                 if len(target) >= window:
                     # Rolling mean
-                    rolling_mean = pd.Series(target).rolling(window=window, min_periods=1).mean().values
+                    rolling_mean = pd.Series(target).shift(1).rolling(window=window, min_periods=1).mean().values
                     features[f"roll_mean_{window}"] = rolling_mean
 
                     # Rolling std
-                    rolling_std = pd.Series(target).rolling(window=window, min_periods=1).std().values
+                    rolling_std = pd.Series(target).shift(1).rolling(window=window, min_periods=1).std().values
                     features[f"roll_std_{window}"] = rolling_std
 
             # Datetime features
@@ -657,25 +655,27 @@ class ForecastGenerator:
         Returns forecast results dictionary.
         """
         try:
-            # Get the last known values for recursive forecasting
-            last_values = features["features"][-1:] if len(features["features"]) > 0 else np.zeros((1, features["features"].shape[1]))
-
-            # Generate forecast recursively
+            # Rebuild shifted lag/rolling/calendar features at every future step.
+            history = list(np.asarray(prepared_data["target"], dtype=float))
+            dates = prepared_data["timestamps"]
             forecast_values = []
-            current_features = last_values.copy()
-
             for step in range(horizon):
-                # Predict next value
-                next_pred = model.predict(current_features)[0]
-                forecast_values.append(next_pred)
-
-                # Update features for next iteration (simplified)
-                # In a full implementation, we would update lag features, rolling stats, etc.
-                # For now, we'll use a simple approach
-                if step < horizon - 1:  # Don't update on last iteration
-                    # Shift features to simulate new observation
-                    # This is a simplification - real implementation would be more complex
-                    pass
+                next_date = dates[-1] + pd.DateOffset(months=step + 1)
+                values = {}
+                for lag in (1, 2, 3, 12):
+                    values[f"lag_{lag}"] = history[-lag]
+                for window in (3, 6, 12):
+                    recent = np.asarray(history[-window:])
+                    values[f"roll_mean_{window}"] = recent.mean()
+                    values[f"roll_std_{window}"] = recent.std(ddof=1)
+                values.update(month=next_date.month, quarter=next_date.quarter,
+                              time_index=len(history))
+                row = np.asarray([[values[name] for name in features["feature_names"]]])
+                prediction = float(model.predict(row)[0])
+                if min(prepared_data["target"]) >= 0:
+                    prediction = max(0, prediction)
+                forecast_values.append(prediction)
+                history.append(prediction)
 
             forecast_values = np.array(forecast_values)
 
