@@ -368,7 +368,7 @@ export default function App() {
     [result, setResult] = useState<Result | null>(null),
     [busy, setBusy] = useState(false),
     [scenario, setScenario] = useState<number[]>([]),
-    [adjust, setAdjust] = useState(0);
+    [adjust, setAdjust] = useState<number | null>(0);
   const [classifierItem, setClassifierItem] = useState(""),
     [classifierBusy, setClassifierBusy] = useState(false);
   const [classifierResults, setClassifierResults] = useState<
@@ -505,7 +505,18 @@ export default function App() {
   const shownHistory = result?.history || history;
   const total = shownHistory.reduce((s, r) => s + r.value, 0),
     projected = scenario.reduce((s, v) => s + v, 0);
-  const base = result?.forecast?.point || [];
+  const base = useMemo(() => result?.forecast?.point || [], [result]);
+  const scenarioFit = useMemo(() => {
+    if (!result?.forecast || !base.length || scenario.length !== base.length)
+      return null;
+    const { lower_90: lower, upper_90: upper } = result.forecast;
+    const scores = base.map((value, index) => {
+      const range = Math.max(upper[index] - lower[index], Math.abs(value) * 0.1, 1);
+      const movement = Math.abs(scenario[index] - value) / range;
+      return Math.max(0, 100 - movement * 35);
+    });
+    return scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  }, [base, result, scenario]);
   const delta = base.reduce((s, v) => s + v, 0)
     ? (projected / base.reduce((s, v) => s + v, 0) - 1) * 100
     : 0;
@@ -518,6 +529,10 @@ export default function App() {
       (result ? { [result.params?.model || model]: result } : {}),
     [result, model],
   );
+  function updateScenario(next: number[]) {
+    setScenario(next);
+    setAdjust(null);
+  }
   async function run() {
     const id = ++request.current;
     setBusy(true);
@@ -925,13 +940,19 @@ export default function App() {
                   <span>Forecast accuracy</span>
                   <div>
                     <strong>
-                      {result?.validation?.accuracy_pct != null
-                        ? `${result.validation.accuracy_pct.toFixed(1)}%`
+                      {scenarioFit != null
+                        ? `${scenarioFit.toFixed(1)}%`
                         : "—"}
                     </strong>
-                    <span className="submetric">Validation</span>
+                    <span className="submetric">
+                      {scenarioFit != null ? "Scenario fit" : "Validation"}
+                    </span>
                   </div>
-                  <small>100 − WAPE · clipped at zero</small>
+                  <small>
+                    {result?.validation?.accuracy_pct != null
+                      ? `Model validation ${result.validation.accuracy_pct.toFixed(1)}% · updates as you edit`
+                      : "Run a model to measure validation accuracy"}
+                  </small>
                 </article>
               </div>
               <section className="panel forecast-panel">
@@ -958,6 +979,10 @@ export default function App() {
                       Forecast
                     </span>
                     <span>
+                      <i className="scenario" />
+                      Planning scenario
+                    </span>
+                    <span>
                       <i className="range" />
                       Model range
                     </span>
@@ -974,7 +999,7 @@ export default function App() {
                   history={shownHistory}
                   forecast={result?.forecast}
                   scenario={scenario}
-                  onChange={setScenario}
+                  onChange={updateScenario}
                   unit={unit}
                 />
                 <div className="chart-footer">
@@ -994,8 +1019,9 @@ export default function App() {
                     <label htmlFor="adjust">
                       Scenario adjustment{" "}
                       <b>
-                        {adjust > 0 ? "+" : ""}
-                        {adjust}%
+                        {adjust === null
+                          ? "Custom"
+                          : `${adjust > 0 ? "+" : ""}${adjust}%`}
                       </b>
                     </label>
                     <input
@@ -1003,7 +1029,7 @@ export default function App() {
                       type="range"
                       min="-50"
                       max="100"
-                      value={adjust}
+                      value={adjust ?? 0}
                       onChange={(e) => {
                         const a = +e.target.value;
                         setAdjust(a);
@@ -1019,7 +1045,11 @@ export default function App() {
                     >
                       Reset to model
                     </button>
-                    <span>Scenario edits do not retrain the model.</span>
+                    <span>
+                      Scenario means “what if we plan for this level of demand?”
+                      It changes the plan instantly. Scenario fit updates against
+                      the model range; measured model validation stays fixed.
+                    </span>
                   </div>
                 )}
               </section>
@@ -1142,7 +1172,7 @@ export default function App() {
                                   if (Number.isFinite(v)) {
                                     const next = [...scenario];
                                     next[i] = Math.max(0, v);
-                                    setScenario(next);
+                                    updateScenario(next);
                                   }
                                 }}
                               />

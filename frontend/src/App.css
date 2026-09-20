@@ -405,6 +405,11 @@ h2 {
 .legend .forecast {
   background: #b9303b;
 }
+.legend .scenario {
+  background: #b9303b;
+  height: 0;
+  border-top: 2px solid #b9303b;
+}
 .legend .range {
   height: 8px;
   background: #ecd9dc;
