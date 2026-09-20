@@ -62,3 +62,21 @@ item metadata is used where historical metadata is unavailable. Quick training i
 not the notebook's full experiment/search. Accuracy is conditional on these choices.
 No sample CSV was committed to the user's production dataset during verification;
 transaction behavior was tested in an isolated SQLite database.
+
+## Repeatability audit
+
+On the live SQL snapshot (265,135 deduplicated rows; 48 monthly points from
+2021-04 through 2025-03), two independent validation runs produced identical
+scores to eight decimal places: Trend 78.72398414%, SARIMA 83.47812981%, Random
+Forest 84.42170712%, LSTM 86.41353212%, and XGBoost 75.87171241%. The response now
+includes the data fingerprint, validation protocol, history window, holdout count,
+and fold summaries. The same snapshot, code, model profile, and protocol therefore
+reproduce the same score. A score is expected to change after new SQL rows, a model
+code/configuration change, or a different output granularity; a page refresh or
+scenario edit does not change it.
+
+The scores are evidence from historical out-of-sample tests, not a guarantee about
+future months. The classifier scores also need imbalance context: NN rev9 is 96.90%
+versus a 95.81% persistence baseline with 83.10% balanced accuracy; TR rev8 is
+89.60% versus an 86.47% baseline with 81.80% balanced accuracy. Fresh actuals should
+be appended and monitored before treating any model as production-certified.
