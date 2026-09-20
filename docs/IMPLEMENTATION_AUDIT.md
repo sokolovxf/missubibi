@@ -2,7 +2,7 @@
 
 ## Evidence and source state
 
-Local HEAD and GitHub `sokolovxf/missubibi` both resolved to `00ba32a75bae161ed678fde56851c6b1d90ed576` before changes. The adapter, trend engine, and plan were untracked local work; their intent was retained while repairing their implementations. No database writes or remote Git history changes were made.
+Local HEAD and GitHub `sokolovxf/missubibi` both resolved to `00ba32a75bae161ed678fde56851c6b1d90ed576` before changes. The adapter, trend engine, and plan were untracked local work; their intent was retained while repairing their implementations. Source SQL tables were preserved. Code was pushed on codex/forecast-planning-workspace; model artifacts stay local and ignored by Git.
 
 Read `plan.txt`, both handoffs, the mockup, September model sources, current engine adapters, and the supplied MySQL schema. Live read-only verification returned 265,135 deduplicated rows, 5,706 items, 87 product categories, 2,159 customers, and 69 industries. Source coverage is April 2021–March 2025. Vendor mapping is absent from the live merged table and supplied schema.
 
@@ -27,9 +27,9 @@ Read `plan.txt`, both handoffs, the mockup, September model sources, current eng
 
 ## Still dependent on missing artifacts or decisions
 
-1. **NN/TR production scores and retraining:** the September folder contains Colab training source, not trained weights, fitted preprocessing, or next-month features. The source expects CSV exports and has notebook-only data-loading/training/plotting steps. A validated training run and export are required. Runtime wrappers and UI are ready; model training itself is not ported into a scheduled production pipeline.
-2. **Classifier exogenous regressors:** not injected into forecasters. A single next-month count is not a historical regressor. Training requires dated, leakage-safe out-of-fold NN/TR signals and a future-feature policy. The signals endpoint exposes current planning indicators only when both exports exist.
-3. **Vendor forecasts:** supported when `vendor_name` exists in the merged source; currently unavailable. No vendor values or relationships are guessed. A vendor-to-item/order mapping is needed.
+1. **NN/TR production scores:** implemented and trained locally. NN rev9 architecture plus equal HistGradientBoosting blend and TR rev8 architecture/features run in an isolated TensorFlow worker. Fit/validation/test months are chronological; preprocessing is fit-only, threshold is validation-only. SavedModel, preprocessing, predictions, diagnostics, and test-only historical signals are versioned locally. Quick (12 epoch maximum) and full (100 maximum) training are available. Dataset changes trigger refresh after CSV imports and in the hourly scheduler.
+2. **Classifier exogenous regressors:** retained as experimental plumbing but disabled in the forecast service. Outer validation alone is insufficient: all engine-internal origins must also freeze signals. Validation-period classifier scores were excluded from historical exports because early stopping used those labels. Current probability indicators and item predictions work independently.
+3. **CSV imports and vendors:** preview/validate UTF-8 CSV, commit append or replace-active transactions to dedicated MySQL tables, preserve original source tables, skip exact duplicates, and apply item/vendor mapping files. Actual vendor relationships must still be supplied.
 4. **Daily/weekly true models:** source dates were unusable in the prior setup; this implementation fits monthly and allocates outputs. Native daily training requires reliable transaction dates.
 5. **Full notebook parity:** existing RF/LSTM adapters are simplified service adaptations of the September notebooks, not identical full notebook experiments. This work fixes their correctness and integration; it does not claim to reproduce every search, feature trial, or diagnostic in the notebooks.
 6. **Model registry scope:** versions reproducible forecast runs, not serialized fitted estimator binaries. A/B comparison is offline comparison of recorded runs; production traffic experiments and fitted-weight deployment rollback remain future work.
@@ -43,3 +43,22 @@ The original plan inverted optimistic/pessimistic bounds. Higher demand/revenue 
 ## Verification
 
 Run `cd backend && .venv/bin/python -m unittest discover -s tests -v` and `npm --prefix frontend run build` / `npm --prefix frontend run lint` from the repository root as appropriate. Regression tests cover conservation, leap dates, compound filters, quiet tails, chronological metrics, RF leakage/recursion, LSTM inversion, ensemble exclusions, API validation, classifier unavailability, and registry rollback. Live engine and browser smoke checks are recorded in the session handoff.
+
+## Latest verification and accuracy
+
+14 unit tests pass, including CSV aliases/invalid values, transactional append/replace,
+idempotence, vendor mapping, and known-denominator WAPE. Frontend build and lint pass.
+Live company/monthly/revenue quick run: ensemble 85.20%, trend 78.72%, SARIMA 83.48%,
+RF 84.42%, LSTM 86.41%, XGBoost 75.87%. Forecast accuracy means max(0,100-WAPE),
+measured on two expanding validation windows; it is not classification accuracy.
+NN held-out classification accuracy 96.90% (last-month baseline 95.81%, balanced
+accuracy 83.10%); TR 89.60%. NN scores 5,706 items; TR scores 5,620 with sufficient
+lag history. Prediction month is April 2025, the month after the dataset cutoff,
+not the wall-clock current month. Classification tests cover June 2024–March 2025.
+
+Training adaptations: the NN panel includes complete inactive months and a fit-only
+positive-quantity demand threshold; this differs from the notebook cohort. Latest
+item metadata is used where historical metadata is unavailable. Quick training is
+not the notebook's full experiment/search. Accuracy is conditional on these choices.
+No sample CSV was committed to the user's production dataset during verification;
+transaction behavior was tested in an isolated SQLite database.

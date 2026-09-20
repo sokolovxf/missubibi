@@ -18,6 +18,13 @@ _log = logging.getLogger(__name__)
 def refresh_once():
     from app.services.forecast_service import forecast
     current_month = datetime.now(timezone.utc).strftime('%Y-%m')
+    from app.services.classifier_runtime import predict
+    from app.services.classifier_jobs import start_training
+    try:
+        if any(predict(kind)['status']=='stale' for kind in ('nn','tr')):
+            start_training(fast=True)
+    except Exception:
+        _log.exception('Classifier refresh check failed')
     for entry in model_registry.list_series().values():
         if _stop.is_set():
             return

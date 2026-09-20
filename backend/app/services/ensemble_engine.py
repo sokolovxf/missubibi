@@ -20,7 +20,7 @@ def run_member(name, frame, horizon, fast=True):
     try:
         with _LOCKS[name]:
             payload = {'model':name, 'rows':json.loads(frame.to_json(orient='records', date_format='iso')),
-                       'horizon':horizon, 'fast':fast}
+                       'horizon':horizon, 'fast':fast, 'classifier_signals':frame.attrs.get('classifier_signals')}
             process = subprocess.run([sys.executable, '-m', 'app.services.model_worker'],
                 input=json.dumps(payload), capture_output=True, text=True, timeout=600,
                 cwd=Path(__file__).resolve().parents[2])
@@ -44,7 +44,7 @@ def run_member(name, frame, horizon, fast=True):
 
 def evaluate_member(name, frame, fast=True, granularity='monthly'):
     n = len(frame)
-    errors, scales = [], []
+    errors, scales, fold_rows = [], [], []
     # Two expanding windows with up to 12 monthly observations per test fold.
     width = min(12, max(1, (n-30)//2))
     for end in (n-2*width, n-width):
@@ -64,8 +64,14 @@ def evaluate_member(name, frame, fast=True, granularity='monthly'):
         error = float(np.abs(actual-predicted).mean())
         errors.append(error)
         scales.append(scale)
+        fold_rows.append({"origin":end,"actual":actual.tolist(),"predicted":predicted.tolist(),"scale":scale})
     mase = [e/s for e, s in zip(errors, scales) if s > 0]
-    return {'mae': float(np.mean(errors)) if errors else None,
+    absolute_error=sum(float(np.abs(np.asarray(f['actual'])-f['predicted']).sum()) for f in fold_rows)
+    actual_total=sum(float(np.abs(f['actual']).sum()) for f in fold_rows)
+    wape=100*absolute_error/actual_total if actual_total>0 else None
+    return {'accuracy_pct':max(0.,100-wape) if wape is not None else None,
+            'wape_pct':wape,'accuracy_definition':'max(0, 100 − validation WAPE)', '_folds':fold_rows,
+            'mae': float(np.mean(errors)) if errors else None,
             'mase': float(np.mean(mase)) if mase else None,
             'folds': len(errors), 'horizon': width, 'granularity': granularity, 'method': 'expanding-window seasonal MASE'}
 
@@ -93,7 +99,28 @@ def run_ensemble_forecast(sales_df, horizon=12, fast=True, **kwargs):
     forecast['spec'] = 'Regularized inverse-MASE ensemble'
     forecast['annual_total'] = sum(forecast['point'])
     forecast['interval_source'] = 'Weighted member bounds; approximate, not jointly calibrated'
-    return {'status': 'ok', 'forecast': forecast, 'members': members, 'weights': weight_map,
+    # Evaluate the ensemble with weights learned only on PRECEDING folds.
+    origins=sorted({f['origin'] for r in members.values() for f in r['validation']['_folds']})
+    past_scores={}
+    ensemble_actual, ensemble_pred=[],[]
+    for origin in origins:
+        available={n:next((f for f in r['validation']['_folds'] if f['origin']==origin),None) for n,r in members.items()}
+        available={n:f for n,f in available.items() if f is not None}
+        if not available:continue
+        score=np.array([1/max(past_scores.get(n,1.),.05) for n in available])
+        w=.05+(1-.05*len(score))*score/score.sum()
+        prediction=sum(np.asarray(f['predicted'])*v for f,v in zip(available.values(),w))
+        actual=np.asarray(next(iter(available.values()))['actual'])
+        ensemble_actual.extend(actual.tolist());ensemble_pred.extend(prediction.tolist())
+        for n,f in available.items():
+            if f['scale']>0:past_scores[n]=float(np.abs(np.asarray(f['actual'])-f['predicted']).mean()/f['scale'])
+    denominator=float(np.abs(ensemble_actual).sum())
+    wape=100*float(np.abs(np.asarray(ensemble_actual)-ensemble_pred).sum())/denominator if denominator else None
+    validation={'accuracy_pct':max(0.,100-wape) if wape is not None else None,'wape_pct':wape,
+                'folds':len(origins),'method':'Walk-forward ensemble; weights from preceding folds only',
+                'accuracy_definition':'max(0, 100 − validation WAPE)'}
+    for member in members.values():member['validation'].pop('_folds',None)
+    return {'status': 'ok', 'validation':validation, 'forecast': forecast, 'members': members, 'weights': weight_map,
             'weight_method': 'chronological CV inverse MASE' if validated else 'equal: no valid CV scale',
             'warnings': [{'kind': 'member_excluded', 'message': f'{n}: {r.get("message", r["status"])}'}
                          for n, r in members.items() if n not in selected]}

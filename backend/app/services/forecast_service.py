@@ -8,7 +8,7 @@ import threading
 import pandas as pd
 import numpy as np
 from app.data.adapter import adapter, resample_monthly
-from app.services.ensemble_engine import run_member, run_ensemble_forecast
+from app.services.ensemble_engine import run_member, run_ensemble_forecast, evaluate_member
 
 _cache = OrderedDict()
 _lock = threading.RLock()
@@ -31,8 +31,12 @@ def forecast(params, force=False):
         value_col=params['value_col'], filters=params.get('filters'))
     if monthly.empty:
         return {'status': 'insufficient_history', 'message': 'No sales match these filters.'}
+    # Historical signals are retained for research. Engine-internal validation
+    # must support origin-specific regressors before enabling them in forecasts.
+    signal_context=None
+    monthly.attrs['classifier_signals']=signal_context
     fingerprint = hashlib.sha256(monthly.to_csv(index=False).encode()).hexdigest()
-    key = hashlib.sha256((fingerprint+json.dumps(params, sort_keys=True)).encode()).hexdigest()
+    key = hashlib.sha256((fingerprint+json.dumps(params, sort_keys=True)+json.dumps((signal_context or {}).get('versions',{}),sort_keys=True)).encode()).hexdigest()
     with _lock:
         if not force and key in _cache:
             return {**copy.deepcopy(_cache[key]), 'cached': True}
@@ -45,6 +49,9 @@ def forecast(params, force=False):
         result = run_ensemble_forecast(monthly, horizon=months, fast=params['fast'], granularity=granularity)
     else:
         result = run_member(params['model'], monthly, months, params['fast'])
+        if result.get('status')=='ok':
+            result['validation']=evaluate_member(params['model'],monthly,params['fast'],granularity)
+            result['validation'].pop('_folds',None)
     if result.get('status') != 'ok':
         return result
     result = _json_safe(copy.deepcopy(result))
@@ -57,6 +64,7 @@ def forecast(params, force=False):
     for member in result.get('members', {}).values():
         if member.get('status') == 'ok':
             member['forecast'] = convert(member['forecast'])
+    result['classifier_signals']={'status':'enabled' if signal_context else 'unavailable', 'versions':(signal_context or {}).get('versions',{}), 'policy':(signal_context or {}).get('policy')}
     result.update(history=resample_monthly(monthly, granularity).to_dict('records'),
                   data_fingerprint=fingerprint, cached=False, params=params,
                   source_granularity='monthly',

@@ -21,7 +21,10 @@ def main():
         raise ValueError('Unknown model')
     with contextlib.redirect_stdout(sys.stderr):
         module=importlib.import_module(f"app.services.{payload['model']}_engine")
-        result=module.run_forecast(pd.DataFrame(payload['rows']),month_col='month',value_col='value',
+        frame=pd.DataFrame(payload['rows'])
+        from app.services.classifier_signals import configure
+        configure(frame,payload.get('classifier_signals'))
+        result=module.run_forecast(frame,month_col='month',value_col='value',
             horizon=payload['horizon'],fast=payload['fast'],series_name='selected_series')
     json.dump(clean(result),sys.stdout,allow_nan=False)
 

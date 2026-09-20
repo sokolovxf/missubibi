@@ -19,6 +19,22 @@ _models = {}
 def predict(kind, item=None):
     if kind not in ('nn','tr'):
         raise ValueError('Unknown classifier')
+    current = ROOT / kind / 'current.json'
+    if current.exists():
+        revision=json.loads(current.read_text())['version']
+        if len(revision)!=32 or any(c not in '0123456789abcdef' for c in revision):
+            return {'status':'error','model':kind,'predictions':[],'message':'Invalid model revision.'}
+        result=json.loads((ROOT/kind/'versions'/revision/'predictions.json').read_text())
+        from app.services.classifier_training_data import data_fingerprint
+        from app.data.adapter import adapter
+        if result['data_fingerprint']!=data_fingerprint(adapter._get_base_data()):
+            return {'status':'stale','model':kind,'predictions':[],'diagnostics':result.get('diagnostics'),
+                    'message':'The dataset changed. Train the classifiers to refresh item predictions.'}
+        if item:
+            result['predictions']=[r for r in result['predictions'] if r['item']==item]
+            if not result['predictions']:
+                return {**result,'status':'insufficient_history','message':'This item has insufficient eligible history for this model (the transformer requires three prior months).'}
+        return result
     folder = ROOT / kind
     required = ('manifest.json','features.json','saved_model/saved_model.pb')
     if not all((folder / p).exists() for p in required):

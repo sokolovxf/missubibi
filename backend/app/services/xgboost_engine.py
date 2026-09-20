@@ -112,7 +112,8 @@ def _make_datetime_features(index: pd.DatetimeIndex) -> pd.DataFrame:
     # Cyclical encoding for month
     df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
     df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
-    return df
+    from app.services.classifier_signals import for_dates
+    return pd.concat([df,for_dates(index)],axis=1)
 
 
 def _prepare_forecast_features(

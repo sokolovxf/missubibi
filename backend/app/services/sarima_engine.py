@@ -445,6 +445,10 @@ def build_exog(positions, K, wd_values, use_wd=None):
             cols[f"cos{k}"] = np.cos(2 * np.pi * k * t / M)
     if use_wd and wd_values is not None:
         cols["working_days"] = (np.asarray(wd_values, float) - WD_FULL.mean()) / WD_FULL.std()
+    from app.services.classifier_signals import for_positions
+    classifier = for_positions(positions)
+    for name in classifier.columns:
+        cols[name] = classifier[name].to_numpy()
     if not cols:
         return None
     return pd.DataFrame(cols)

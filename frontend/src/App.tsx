@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
+import CsvImport from "./CsvImport";
 
 type Row = { month: string; value: number };
 type Curve = {
@@ -15,6 +16,8 @@ type Member = {
   message?: string;
   forecast?: Curve;
   validation?: {
+    accuracy_pct?: number | null;
+    wape_pct?: number | null;
     mase: number | null;
     mae: number | null;
     folds: number;
@@ -386,8 +389,41 @@ export default function App() {
     [showFilters, setShowFilters] = useState(false),
     [classifier, setClassifier] = useState<{
       message: string;
-      models: { name: string; target: string; status: string }[];
+      training?: {
+        status: string;
+        stage?: string;
+        model?: string;
+        epoch?: number;
+        epochs?: number;
+        message?: string;
+      };
+      models: {
+        id: string;
+        name: string;
+        target: string;
+        status: string;
+        items?: number;
+        prediction_month?: string;
+        diagnostics?: {
+          accuracy_pct: number;
+          auc: number;
+          f1: number;
+          persistence_accuracy_pct: number;
+          test_rows: number;
+        };
+      }[];
     } | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [training, setTraining] = useState<{
+    status: string;
+    stage?: string;
+    model?: string;
+    epoch?: number;
+    epochs?: number;
+    message?: string;
+  }>({ status: "idle" });
+  const [trainingFast, setTrainingFast] = useState(true);
+  const [reviewOnly, setReviewOnly] = useState(false);
   const request = useRef(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -404,7 +440,10 @@ export default function App() {
   useEffect(() => {
     if (view === "demand")
       api<typeof classifier>("/classifiers")
-        .then(setClassifier)
+        .then((data) => {
+          setClassifier(data);
+          if (data?.training) setTraining(data.training);
+        })
         .catch((e) => setError(e.message));
   }, [view]);
   useEffect(
@@ -413,6 +452,52 @@ export default function App() {
     },
     [],
   );
+  useEffect(() => {
+    if (training.status !== "running") return;
+    const timer = setInterval(() => {
+      api<typeof training>("/classifier/training")
+        .then(async (status) => {
+          setTraining(status);
+          if (status.status === "done") {
+            const data = await api<typeof classifier>("/classifiers");
+            setClassifier(data);
+          }
+        })
+        .catch((e) => {
+          setError(e.message);
+          setTraining({ status: "error", message: e.message });
+        });
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [training.status]);
+  async function trainClassifiers() {
+    try {
+      setTraining(
+        await api<typeof training>("/classifier/train", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fast: trainingFast }),
+        }),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Training could not start");
+    }
+  }
+  async function refreshData() {
+    setResult(null);
+    setScenario([]);
+    setClassifierResults([]);
+    setDimension("total");
+    setValue("");
+    setFilters({});
+    try {
+      setOptions(await api<Options>("/options"));
+      setHistory(await api<Row[]>("/history"));
+      setClassifier(await api<typeof classifier>("/classifiers"));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Refresh failed");
+    }
+  }
   const maxHorizon =
     granularity === "yearly" ? 10 : granularity === "quarterly" ? 40 : 60;
   const unit =
@@ -605,14 +690,29 @@ export default function App() {
                       : "Source coverage, planning assumptions, and available dimensions."}
               </p>
             </div>
-            <button
-              className="secondary export"
-              onClick={exportCsv}
-              disabled={!result?.forecast}
-            >
-              ↗ Export forecast
-            </button>
+            <div className="heading-actions">
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => setImportOpen(true)}
+              >
+                ↑ Import CSV
+              </button>
+              <button
+                className="secondary export"
+                onClick={exportCsv}
+                disabled={!result?.forecast}
+              >
+                ↗ Export forecast
+              </button>
+            </div>
           </div>
+          {importOpen && (
+            <CsvImport
+              onClose={() => setImportOpen(false)}
+              onImported={refreshData}
+            />
+          )}
           {error && (
             <div className="error" role="alert">
               {error}
@@ -822,24 +922,16 @@ export default function App() {
                   <small>Adjustment relative to model forecast</small>
                 </article>
                 <article className="panel kpi">
-                  <span>Model validation</span>
+                  <span>Forecast accuracy</span>
                   <div>
                     <strong>
-                      {result?.diagnostics?.mase != null
-                        ? result.diagnostics.mase.toFixed(2)
-                        : result?.weights
-                          ? Object.keys(result.weights).length
-                          : "—"}
+                      {result?.validation?.accuracy_pct != null
+                        ? `${result.validation.accuracy_pct.toFixed(1)}%`
+                        : "—"}
                     </strong>
-                    <span className="submetric">
-                      {result?.weights ? "models" : "MASE"}
-                    </span>
+                    <span className="submetric">Validation</span>
                   </div>
-                  <small>
-                    {result?.weights
-                      ? "Contributing ensemble members"
-                      : "Below 1.0: error below seasonal reference"}
-                  </small>
+                  <small>100 − WAPE · clipped at zero</small>
                 </article>
               </div>
               <section className="panel forecast-panel">
@@ -957,6 +1049,14 @@ export default function App() {
                         </div>
                         <strong>{m.name}</strong>
                         <small>{m.desc}</small>
+                        <small className="model-accuracy">
+                          {(m.id === "ensemble"
+                            ? result?.validation
+                            : comparison[m.id]?.validation
+                          )?.accuracy_pct != null
+                            ? `${(m.id === "ensemble" ? result?.validation : comparison[m.id]?.validation)?.accuracy_pct?.toFixed(1)}% accuracy`
+                            : "Accuracy: run model to validate"}
+                        </small>
                         <span className="model-status">
                           {model === m.id
                             ? "Selected for next run"
@@ -1082,6 +1182,8 @@ export default function App() {
                     <tr>
                       <th>Model</th>
                       <th>Status</th>
+                      <th>Accuracy</th>
+                      <th>WAPE</th>
                       <th>CV MASE</th>
                       <th>Folds</th>
                       <th>Weight</th>
@@ -1106,6 +1208,16 @@ export default function App() {
                                 {r?.status || "Not run"}
                               </span>
                             </td>
+                            <td>
+                              {r?.validation?.accuracy_pct != null
+                                ? `${r.validation.accuracy_pct.toFixed(1)}%`
+                                : "—"}
+                            </td>
+                            <td>
+                              {r?.validation?.wape_pct != null
+                                ? `${r.validation.wape_pct.toFixed(1)}%`
+                                : "—"}
+                            </td>
                             <td>{r?.validation?.mase?.toFixed(3) || "—"}</td>
                             <td>{r?.validation?.folds ?? "—"}</td>
                             <td>
@@ -1123,24 +1235,59 @@ export default function App() {
                 </table>
               </div>
               <p className="table-note">
-                MASE is measured in original units against a seasonal-naive
-                scale. Validation uses expanding monthly windows. Weighted
-                bounds are approximate and are not a calibrated ensemble
-                interval.
+                Accuracy is max(0, 100 − validation WAPE). WAPE is total
+                absolute forecast error divided by total absolute actual demand.
+                MASE scales errors by a seasonal-naive reference. Validation
+                uses expanding monthly windows. Weighted bounds are approximate
+                and are not a calibrated ensemble interval.
               </p>
             </section>
           )}
           {view === "demand" && (
             <>
               <section className="panel demand-intro">
-                <span className="tag">MODEL EXPORT REQUIRED</span>
-                <h2>Ready for the next layer of demand intelligence.</h2>
+                <span className="tag">
+                  {training.status === "running"
+                    ? "TRAINING IN PROGRESS"
+                    : "ITEM DEMAND MODELS"}
+                </span>
+                <h2>Understand demand before the next order.</h2>
                 <p>
                   {classifier?.message ||
                     "Loading classifier deployment status…"}
                 </p>
               </section>
+              <div className="training-status" role="status">
+                {training.status === "running"
+                  ? `${training.model || "Models"} · ${training.stage || "Training"} ${training.epoch ? `· epoch ${training.epoch}/${training.epochs}` : ""}`
+                  : training.status === "error"
+                    ? training.message
+                    : "Training uses earlier months. Accuracy is measured on later, held-out months."}
+              </div>
               <section className="panel controls">
+                <div className="control">
+                  <label htmlFor="training-profile">Training profile</label>
+                  <select
+                    id="training-profile"
+                    value={trainingFast ? "quick" : "full"}
+                    disabled={training.status === "running"}
+                    onChange={(e) =>
+                      setTrainingFast(e.target.value === "quick")
+                    }
+                  >
+                    <option value="quick">Quick · up to 12 epochs</option>
+                    <option value="full">Full · up to 100 epochs</option>
+                  </select>
+                </div>
+                <button
+                  className="secondary"
+                  onClick={trainClassifiers}
+                  disabled={training.status === "running"}
+                >
+                  {training.status === "running"
+                    ? "Training…"
+                    : "Train / refresh models"}
+                </button>
                 <div className="control selection">
                   <label htmlFor="classifier-item">Item / SKU</label>
                   <input
@@ -1164,6 +1311,14 @@ export default function App() {
                   {classifierBusy ? "Checking…" : "Check demand"}
                 </button>
               </section>
+              <label className="table-note">
+                <input
+                  type="checkbox"
+                  checked={reviewOnly}
+                  onChange={(e) => setReviewOnly(e.target.checked)}
+                />{" "}
+                Show borderline review queue only
+              </label>
               {classifierResults.map((r) => (
                 <section className="panel detail-table" key={r.model}>
                   <div className="section-heading">
@@ -1183,23 +1338,85 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {r.predictions.slice(0, 100).map((p) => (
-                          <tr key={p.item}>
-                            <td>{p.item}</td>
-                            <td>
-                              <meter min="0" max="1" value={p.probability} />{" "}
-                              {(p.probability * 100).toFixed(1)}%
-                            </td>
-                            <td>{p.review ? "Borderline · review" : "—"}</td>
-                          </tr>
-                        ))}
+                        {r.predictions
+                          .filter((p) => !reviewOnly || p.review)
+                          .slice(0, 100)
+                          .map((p) => (
+                            <tr key={p.item}>
+                              <td>{p.item}</td>
+                              <td>
+                                <meter min="0" max="1" value={p.probability} />{" "}
+                                {(p.probability * 100).toFixed(1)}%
+                              </td>
+                              <td>{p.review ? "Borderline · review" : "—"}</td>
+                            </tr>
+                          ))}
                       </tbody>
                     </table>
                   )}
                   {r.diagnostics && (
-                    <pre className="table-note">
-                      {JSON.stringify(r.diagnostics, null, 2)}
-                    </pre>
+                    <div className="diagnostic-grid">
+                      <div>
+                        <strong>
+                          {Number(r.diagnostics.accuracy_pct).toFixed(1)}%
+                        </strong>
+                        <span>Held-out accuracy</span>
+                      </div>
+                      <div>
+                        <strong>{Number(r.diagnostics.auc).toFixed(3)}</strong>
+                        <span>ROC AUC</span>
+                      </div>
+                      <div>
+                        <strong>
+                          {Number(r.diagnostics.balanced_accuracy_pct).toFixed(
+                            1,
+                          )}
+                          %
+                        </strong>
+                        <span>Balanced accuracy</span>
+                      </div>
+                      <div>
+                        <strong>
+                          {Number(
+                            r.diagnostics.persistence_accuracy_pct,
+                          ).toFixed(1)}
+                          %
+                        </strong>
+                        <span>Last-month baseline</span>
+                      </div>
+                      <div>
+                        <strong>
+                          {Number(r.diagnostics.test_rows).toLocaleString()}
+                        </strong>
+                        <span>Held-out item-months</span>
+                      </div>
+                      <div>
+                        <span>
+                          Confusion matrix · actual rows / predicted columns
+                        </span>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th></th>
+                              <th>Negative</th>
+                              <th>Positive</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(
+                              r.diagnostics.confusion_matrix as number[][]
+                            )?.map((row, i) => (
+                              <tr key={i}>
+                                <th>{i ? "Positive" : "Negative"}</th>
+                                {row.map((v, j) => (
+                                  <td key={j}>{v.toLocaleString()}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                   )}
                 </section>
               ))}
@@ -1209,9 +1426,18 @@ export default function App() {
                     <span className="small-label">SEPTEMBER MODEL</span>
                     <h2>{m.name}</h2>
                     <div className="probability">
-                      —<small>Probability unavailable</small>
+                      {m.diagnostics
+                        ? `${m.diagnostics.accuracy_pct.toFixed(1)}%`
+                        : "—"}
+                      <small>
+                        {m.diagnostics
+                          ? "Held-out accuracy"
+                          : "Train this model to measure accuracy"}
+                      </small>
                     </div>
-                    <p>Target: {m.target}</p>
+                    <p>
+                      Target: {m.target} · {m.items || 0} scored items
+                    </p>
                     <span className="tag">{m.status}</span>
                   </section>
                 ))}

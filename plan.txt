@@ -4,15 +4,16 @@ The original plan below is retained for context. It is not a completion checklis
 See docs/IMPLEMENTATION_AUDIT.md for verified implementation status and blockers,
 and backend/PLANNING.md for the current API, runtime, and classifier export contract.
 
-Implemented: shared MySQL adapter; five-model planning API and ensemble; item and
-combined filters; all planning frequencies; model correctness fixes; redesigned
-interactive dashboard; inference-only classifier wrappers; forecast-run registry;
-and scheduled refresh of previously requested forecast configurations.
+Implemented: shared MySQL adapter; five forecasters and ensemble; combined filters;
+calendar views; redesigned scenario dashboard; per-model WAPE/accuracy; previewed
+CSV imports and vendor mapping; trained NN rev9 + TR rev8 demand predictions;
+classifier accuracy/baselines/confusion matrices; training controls and refresh;
+forecast-run registry and scheduled refresh.
 
-Not fully complete: trained NN/TR exports and production training pipeline;
-leakage-safe classifier exogenous histories; vendor mapping; exact full notebook
-parity; fitted-estimator deployment rollback and production A/B traffic routing.
-Daily/weekly values are allocated monthly estimates, not daily observed forecasts.
+Still open: origin-safe classifier regressors inside every forecast validation
+routine (disabled); exact full notebook search parity; fitted-estimator rollback
+and production A/B routing. Actual vendor mappings must be supplied. Daily/weekly
+values remain allocated monthly estimates until reliable dated data is available.
 
 ---
 

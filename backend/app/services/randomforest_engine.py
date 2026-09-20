@@ -497,6 +497,9 @@ class FeatureEngineer:
             # Time index
             features["time_index"] = np.arange(len(target))
 
+            from app.services.classifier_signals import for_dates
+            classifier = for_dates(timestamps)
+            for name in classifier.columns: features[name] = classifier[name].to_numpy()
             # Convert to DataFrame
             feature_df = pd.DataFrame(features)
 
@@ -670,6 +673,9 @@ class ForecastGenerator:
                     values[f"roll_std_{window}"] = recent.std(ddof=1)
                 values.update(month=next_date.month, quarter=next_date.quarter,
                               time_index=len(history))
+                from app.services.classifier_signals import for_dates
+                signal = for_dates([next_date])
+                if not signal.empty: values.update(signal.iloc[0].to_dict())
                 row = np.asarray([[values[name] for name in features["feature_names"]]])
                 prediction = float(model.predict(row)[0])
                 if min(prepared_data["target"]) >= 0:

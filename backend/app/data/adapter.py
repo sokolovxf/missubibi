@@ -61,7 +61,9 @@ class DataAdapter:
                 SELECT `year_month` AS month, item_code AS item,
                     product_category_2 AS product, company_name AS customer,
                     fa_sub_industries AS industry, {vendor} AS vendor,
-                    quantity AS actual_units, total_revenue_thb AS revenue
+                    quantity AS actual_units, total_revenue_thb AS revenue,
+                    base_price, list_price, product_category_1, production_status,
+                    customer_type, so_internal_id AS order_id, sales_order_status
                 FROM deduped WHERE rn = 1
             """
             df = pd.read_sql(query, engine)
@@ -72,6 +74,15 @@ class DataAdapter:
             df['month'] = dates.loc[dates.notna()].dt.strftime('%Y-%m-%d')
             for col in VALUE_COLUMNS:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float)
+            from app.services.csv_import import load_overlay
+            include_base, imported, vendors = load_overlay()
+            if not include_base:
+                df = df.iloc[:0]
+            if not imported.empty:
+                df = pd.concat([df, imported], ignore_index=True)
+            for col in DIMENSIONS[1:]:
+                df[col] = df[col].astype('string').str.strip().replace('', pd.NA)
+            df['vendor'] = df['vendor'].fillna(df['item'].map(vendors))
             _cache.update(data=df, time=time.monotonic())
             return df.copy()
 

@@ -4,7 +4,7 @@ from typing import Literal
 import threading
 import time
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from app.data.adapter import adapter, DIMENSIONS, GRANULARITIES
 from app.services.forecast_service import forecast
@@ -96,10 +96,32 @@ def status(job_id: str):
 
 @router.get('/classifiers')
 def classifiers():
-    return {'status':'unavailable', 'models':[
-        {'name':'Neural network · rev 9', 'target':'High demand', 'status':'Awaiting trained model export'},
-        {'name':'Tabular transformer · rev 8', 'target':'Sold / not sold', 'status':'Awaiting trained model export'}],
-        'message':'September source notebooks are present. Deployment requires trained weights, fitted preprocessing, feature schema, and validation diagnostics. No probabilities or exogenous signals are fabricated.'}
+    from app.services.classifier_runtime import predict
+    from app.services.classifier_jobs import training_status
+    models=[]
+    for kind,name,target in [('nn','Neural network · rev 9','High demand'),('tr','Tabular transformer · rev 8','Sold / not sold')]:
+        result=predict(kind)
+        models.append({'id':kind,'name':name,'target':target,'status':result['status'],
+            'diagnostics':result.get('diagnostics'),'items':len(result.get('predictions',[])),
+            'prediction_month':result.get('prediction_month')})
+    return {'status':'ok','models':models,'training':training_status(),
+            'message':'Train on your sales history, then explore item probabilities and held-out model accuracy.'}
+
+
+class TrainingRequest(BaseModel):
+    fast: bool=True
+
+
+@router.post('/classifier/train',status_code=202)
+def train_classifiers(params: TrainingRequest=TrainingRequest()):
+    from app.services.classifier_jobs import start_training
+    return start_training(params.fast)
+
+
+@router.get('/classifier/training')
+def classifier_training():
+    from app.services.classifier_jobs import training_status
+    return training_status()
 
 
 class ClassifierRequest(BaseModel):
@@ -149,3 +171,30 @@ def compare_revisions(a: str, b: str):
         return compare(a,b)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@router.post('/imports/preview')
+async def import_preview(request: Request, filename: str='sales.csv'):
+    from app.services.csv_import import preview
+    raw=bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw)>20*1024*1024:raise HTTPException(413,'CSV size limit is 20 MB.')
+    try:return preview(bytes(raw),filename)
+    except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+
+class ImportCommit(BaseModel):
+    token: str
+    mode: Literal['append','replace']='append'
+
+
+@router.post('/imports/commit')
+def import_commit(params: ImportCommit):
+    from app.services.csv_import import commit
+    try:
+        result=commit(params.token,params.mode)
+        from app.services.classifier_jobs import start_training
+        result['training']=start_training(fast=True)
+        return result
+    except ValueError as exc:raise HTTPException(422,str(exc)) from exc

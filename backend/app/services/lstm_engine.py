@@ -437,7 +437,9 @@ def make_sequences(y, mode, params, lookback=None, use_capped=False):
         return (np.empty((0, L, 1)), np.empty((0, 1)), np.empty(0), np.empty(0, dtype=int))
 
     X_seq = np.stack(seqs).astype(np.float32)[:, :, None]  # Add channel dim
-    X_stat = np.zeros((len(seqs), 1), dtype=np.float32)  # Placeholder static
+    from app.services.classifier_signals import for_positions
+    classifier=for_positions(positions)
+    X_stat = classifier.to_numpy(dtype=np.float32) if len(classifier.columns) else np.zeros((len(seqs), 1), dtype=np.float32)
     y_arr = np.asarray(targets, dtype=np.float32)
     pos_arr = np.asarray(positions, dtype=int)
 
@@ -560,7 +562,9 @@ def lstm_predict_recursive(models, y_history, horizon, mode, params, lookback=No
         if mode == "log":
             seq = np.log1p(np.maximum(seq, 0))
         X_seq = seq.astype(np.float32).reshape(1, L, 1)
-        X_stat = np.zeros((1, 1), dtype=np.float32)
+        from app.services.classifier_signals import for_positions
+        classifier=for_positions([t])
+        X_stat=classifier.to_numpy(dtype=np.float32) if len(classifier.columns) else np.zeros((1, 1), dtype=np.float32)
 
         pred_scaled = float(predict_ensemble(models, X_seq, X_stat)[0])
 

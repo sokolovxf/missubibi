@@ -957,3 +957,154 @@ footer b {
     transition: none !important;
   }
 }
+.import-dialog {
+  width: min(920px, 94vw);
+  max-height: 90vh;
+  border: 1px solid #dfe4e7;
+  border-radius: 12px;
+  padding: 0;
+  color: #243138;
+  box-shadow: 0 24px 100px #14232d33;
+}
+.import-dialog::backdrop {
+  background: #1e2c3a66;
+  backdrop-filter: blur(3px);
+}
+.import-body {
+  padding: 20px 24px 26px;
+}
+.import-body > p {
+  font-size: 12px;
+  line-height: 1.8;
+  color: #74818a;
+  margin-bottom: 12px;
+}
+.upload-zone {
+  padding: 20px;
+  border: 1px dashed #bfcbd1;
+  border-radius: 7px;
+  background: #f8fafb;
+  margin: 20px 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+.upload-zone label {
+  font-weight: 600;
+}
+.upload-zone small {
+  display: block;
+  color: #87939a;
+  font-size: 10px;
+  margin-top: 6px;
+}
+.upload-zone input {
+  font-size: 12px;
+  max-width: 100%;
+}
+.import-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  font-size: 12px;
+  margin: 18px 0;
+}
+.import-dialog fieldset {
+  border: 1px solid #e4e8eb;
+  border-radius: 6px;
+  padding: 18px;
+  margin: 20px 0;
+}
+.import-dialog fieldset label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 12px;
+}
+.import-dialog fieldset p {
+  font-size: 11px;
+  color: #849199;
+  margin: 0 0 15px 24px;
+}
+.import-dialog legend {
+  font-size: 12px;
+  padding: 0 7px;
+}
+.import-success {
+  padding: 15px;
+  background: #eaf5ee;
+  border-radius: 5px;
+  color: #2e7351;
+  font-size: 13px;
+}
+.heading-actions {
+  display: flex;
+  gap: 8px;
+}
+.model-accuracy {
+  margin-top: 9px;
+  color: #50735f !important;
+  font-weight: 600;
+  font-size: 12px !important;
+}
+.classifier-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 18px 0;
+}
+.classifier-stats strong {
+  display: block;
+  font-size: 20px;
+}
+.classifier-stats small {
+  font-size: 10px;
+  color: #819098;
+}
+.training-status {
+  padding: 16px 22px;
+  background: #fbf3f3;
+  border: 1px solid #ecd7d8;
+  border-radius: 6px;
+  margin: 15px 0;
+  font-size: 12px;
+}
+.classifier-card .probability {
+  padding: 15px;
+  font-size: 38px;
+}
+.classifier-card .probability small {
+  font-size: 11px;
+}
+.diagnostic-grid {
+  padding: 20px 24px;
+  display: flex;
+  gap: 35px;
+  flex-wrap: wrap;
+}
+.diagnostic-grid strong {
+  font-size: 21px;
+  display: block;
+}
+.diagnostic-grid span {
+  font-size: 10px;
+  color: #859198;
+}
+.diagnostic-grid table {
+  width: auto;
+}
+.diagnostic-grid td,
+.diagnostic-grid th {
+  padding: 8px 12px;
+}
+@media (max-width: 650px) {
+  .heading-actions {
+    flex-wrap: wrap;
+  }
+  .import-body {
+    padding: 14px;
+  }
+  .classifier-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}
