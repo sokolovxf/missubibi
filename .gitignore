@@ -48,3 +48,8 @@ build/
 
 # Local model artifacts and forecast run records
 backend/var/
+
+# Local presentation build and validation artifacts
+.chart-data-*/
+.codex-finalizer/
+.pptx-build/

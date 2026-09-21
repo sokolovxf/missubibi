@@ -26,7 +26,16 @@ mbreload() {
 }
 Then reload your shell:
 source ~/.zshrc
-2. From now on
+2. Keep the shared Mitsubishi data current
+After `git pull`, run this from the repository root before starting the app:
+```bash
+./database/ensure_current.sh --sync
+```
+It checks the repository fingerprint recorded in the local MySQL database and
+rebuilds only when the local data is missing or stale. The rebuild uses the
+current `database/schema.sql` and `database/seed.sql` from GitHub.
+
+3. From now on
 Start everything with:
 mbstart
 You'll have:
@@ -99,7 +108,16 @@ function mbreload {
 
     mbstart
 }
-Then close and reopen PowerShell.
+Then close and reopen PowerShell. To sync the database and start both apps from
+the cloned repository, run:
+```powershell
+.\start-local.ps1 -SyncDatabase
+```
+
+For Git Bash on Windows, the equivalent is:
+```bash
+./start-local.sh --sync-db
+```
 You can now use:
 mbstart
 to launch:

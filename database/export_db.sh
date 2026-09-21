@@ -23,6 +23,7 @@ mysqldump -u "$DB_USER" -p \
   --no-data \
   --routines \
   --triggers \
+  --ignore-table="$DB_NAME._missubibi_seed_metadata" \
   --set-gtid-purged=OFF \
   --default-character-set=utf8mb4 \
   "$DB_NAME" > "$SCHEMA_FILE"
@@ -32,6 +33,7 @@ mysqldump -u "$DB_USER" -p \
   --no-create-info \
   --no-create-db \
   --skip-triggers \
+  --ignore-table="$DB_NAME._missubibi_seed_metadata" \
   --single-transaction \
   --set-gtid-purged=OFF \
   --default-character-set=utf8mb4 \

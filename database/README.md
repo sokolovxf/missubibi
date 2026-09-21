@@ -25,6 +25,36 @@
    uv run uvicorn app.main:app --reload --port 8100
    ```
 
+## Keep a teammate's local database current
+
+After every `git pull`, run this one command before starting the server:
+
+```bash
+./database/ensure_current.sh --sync
+```
+
+The command compares the checked-out `schema.sql` and `seed.sql` fingerprints
+with a marker recorded inside MySQL. If the local database already matches, it
+does nothing. If it is missing or stale, it rebuilds `missubibi` from the
+checked-out Mitsubishi snapshot. The rebuild is intentionally explicit because
+it drops and recreates the local database.
+
+For a one-command macOS/Linux startup that checks the database first:
+
+```bash
+./start-local.sh --sync-db
+```
+
+For Windows PowerShell:
+
+```powershell
+.\database\ensure_current.ps1 -Sync
+.\start-local.ps1 -SyncDatabase
+```
+
+The import marker is excluded from future database exports, so it never becomes
+part of the source data or changes the shared seed dump.
+
 ## Before you push changes to the database
 
 If you've changed any data locally that the team needs, run:
