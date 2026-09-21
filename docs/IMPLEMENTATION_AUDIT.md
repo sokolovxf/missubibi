@@ -21,7 +21,8 @@ and attributes match; the sales table contains all 272,000 source lines, all
 original dates (2021-04-01 through 2025-03-31), all original order/item/price/
 quantity fields, and 48 monthly totals. The derived revenue formula matches
 `base_price × quantity` on every row. The repository seed was regenerated from
-the repaired database so a future local import retains this state.
+the repaired database locally so a future local import in this workspace retains
+this state.
 
 The first SQL load had stored a zero date for every sales row and a carriage
 return on 271,999 month labels. Those artifacts were repaired from the source
