@@ -323,6 +323,18 @@ input[type="range"] {
   color: #9aa4aa;
   margin-left: 4px;
 }
+.native-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 35px;
+  color: #7c878e;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.native-toggle input {
+  accent-color: #ba3741;
+}
 .kpis {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

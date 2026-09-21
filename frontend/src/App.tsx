@@ -416,6 +416,7 @@ export default function App() {
     [filters, setFilters] = useState<Record<string, string>>({});
   const [granularity, setGranularity] = useState("monthly"),
     [calendar, setCalendar] = useState("calendar"),
+    [nativeHistory, setNativeHistory] = useState(false),
     [useClassifierSignals, setUseClassifierSignals] = useState(false),
     [metric, setMetric] = useState("revenue"),
     [horizon, setHorizon] = useState(12),
@@ -510,6 +511,23 @@ export default function App() {
         })
         .catch((e) => setError(e.message));
   }, [view]);
+  useEffect(() => {
+    if (!nativeHistory || !["daily", "weekly"].includes(granularity)) return;
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      dimension,
+      value_col: metric,
+      granularity,
+      native: "true",
+    });
+    if (dimension !== "total" && value) params.set("dimension_value", value);
+    api<Row[]>(`/history?${params}`, { signal: controller.signal })
+      .then(setHistory)
+      .catch((e) => {
+        if (e.name !== "AbortError") setError(e.message);
+      });
+    return () => controller.abort();
+  }, [nativeHistory, granularity, dimension, value, metric]);
   async function loadInventory() {
     setInventoryLoading(true);
     try {
@@ -599,7 +617,7 @@ export default function App() {
     granularity === "yearly" ? 10 : granularity === "quarterly" ? 40 : 60;
   const unit =
     (result?.params?.value_col || "revenue") === "revenue" ? "฿" : "";
-  const shownHistory = result?.history || history;
+  const shownHistory = nativeHistory ? history : result?.history || history;
   const total = shownHistory.reduce((s, r) => s + r.value, 0),
     projected = scenario.reduce((s, v) => s + v, 0);
   const base = useMemo(() => result?.forecast?.point || [], [result]);
@@ -937,8 +955,10 @@ export default function App() {
                     value={granularity}
                     disabled={busy}
                     onChange={(e) => {
-                      setGranularity(e.target.value);
-                      setHorizon(e.target.value === "yearly" ? 3 : 12);
+                      const next = e.target.value;
+                      setGranularity(next);
+                      setNativeHistory(false);
+                      setHorizon(next === "yearly" ? 3 : 12);
                     }}
                   >
                     {grains.map((g) => (
@@ -958,6 +978,16 @@ export default function App() {
                     <option value="fiscal_apr">Fiscal year · Apr–Mar</option>
                   </select>
                 </div>
+                {(granularity === "daily" || granularity === "weekly") && (
+                  <label className="native-toggle">
+                    <input
+                      type="checkbox"
+                      checked={nativeHistory}
+                      onChange={(e) => setNativeHistory(e.target.checked)}
+                    />
+                    Observed transaction dates
+                  </label>
+                )}
                 <div className="control horizon">
                   <label htmlFor="horizon">
                     Horizon <b>{horizon} periods</b>
