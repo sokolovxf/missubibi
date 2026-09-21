@@ -1,10 +1,37 @@
-# Implementation audit — 20 September 2026
+# Implementation audit — 21 September 2026
 
 ## Evidence and source state
 
 Local HEAD and GitHub `sokolovxf/missubibi` both resolved to `00ba32a75bae161ed678fde56851c6b1d90ed576` before changes. The adapter, trend engine, and plan were untracked local work; their intent was retained while repairing their implementations. Source SQL tables were preserved. Code was pushed on codex/forecast-planning-workspace; model artifacts stay local and ignored by Git.
 
 Read `plan.txt`, both handoffs, the mockup, September model sources, current engine adapters, and the supplied MySQL schema. Live read-only verification returned 265,135 deduplicated rows, 5,706 items, 87 product categories, 2,159 customers, and 69 industries. Source coverage is April 2021–March 2025. Vendor mapping is absent from the live merged table and supplied schema.
+
+## Mitsubishi source lineage audit
+
+The four supplied workbooks were checked at sheet level. `RawData_Combined.xlsx`
+contains exact copies of the three originals: Customer (2,159 rows), Item
+(5,706 rows), and SalesOrderHistory (272,000 rows). The canonical sheet hashes
+matched the originals before the SQL comparison: Customer
+`36039626dd840be0d4a54163ba9402918a1ffbfd2742777cbb2eef811380526b`, Item
+`094552938f0d85ba0dd72fb5f91fc5b17620df89eb1556d5d4ac8acde827020c`, and
+SalesOrderHistory `e30616593d1b93fb8a220de107c23b84053acd93f0bd20e7be71cb878b01a68e`.
+
+The SQL tables now reconcile to those originals. Customer and Item identifiers
+and attributes match; the sales table contains all 272,000 source lines, all
+original dates (2021-04-01 through 2025-03-31), all original order/item/price/
+quantity fields, and 48 monthly totals. The derived revenue formula matches
+`base_price × quantity` on every row. The repository seed was regenerated from
+the repaired database so a future local import retains this state.
+
+The first SQL load had stored a zero date for every sales row and a carriage
+return on 271,999 month labels. Those artifacts were repaired from the source
+files. The 13 source items with blank list prices are now marked as missing and
+their 15 affected sales lines retain NULL list-price-derived values. The source
+contains 6,865 extra exact duplicate lines (11,928 rows belong to duplicate
+groups); the rows remain in SQL and are flagged. Forecasting intentionally uses
+the 265,135-row canonical view after removing those extra copies. This is the
+only source-row reduction in the forecast input and remains a business rule to
+confirm.
 
 ## Implemented
 
@@ -30,7 +57,7 @@ Read `plan.txt`, both handoffs, the mockup, September model sources, current eng
 1. **NN/TR production scores:** implemented and trained locally. NN rev9 architecture plus equal HistGradientBoosting blend and TR rev8 architecture/features run in an isolated TensorFlow worker. Fit/validation/test months are chronological; preprocessing is fit-only, threshold is validation-only. SavedModel, preprocessing, predictions, diagnostics, and test-only historical signals are versioned locally. Quick (12 epoch maximum) and full (100 maximum) training are available. Dataset changes trigger refresh after CSV imports and in the hourly scheduler.
 2. **Classifier exogenous regressors:** retained as experimental plumbing but disabled in the forecast service. Outer validation alone is insufficient: all engine-internal origins must also freeze signals. Validation-period classifier scores were excluded from historical exports because early stopping used those labels. Current probability indicators and item predictions work independently.
 3. **CSV imports and vendors:** preview/validate UTF-8 CSV, commit append or replace-active transactions to dedicated MySQL tables, preserve original source tables, skip exact duplicates, and apply item/vendor mapping files. Actual vendor relationships must still be supplied.
-4. **Daily/weekly true models:** source dates were unusable in the prior setup; this implementation fits monthly and allocates outputs. Native daily training requires reliable transaction dates.
+4. **Daily/weekly true models:** the original transaction dates are now preserved in SQL, but the forecasting layer still fits monthly and allocates daily/weekly outputs. Native daily training is a separate model change.
 5. **Full notebook parity:** existing RF/LSTM adapters are simplified service adaptations of the September notebooks, not identical full notebook experiments. This work fixes their correctness and integration; it does not claim to reproduce every search, feature trial, or diagnostic in the notebooks.
 6. **Model registry scope:** versions reproducible forecast runs, not serialized fitted estimator binaries. A/B comparison is offline comparison of recorded runs; production traffic experiments and fitted-weight deployment rollback remain future work.
 7. **Data rules:** composite order-line deduplication still needs business-owner confirmation. Calendar quarter/year boundaries are used; full Mitsubishi fiscal reporting is not implemented for those views.
@@ -46,13 +73,14 @@ Run `cd backend && .venv/bin/python -m unittest discover -s tests -v` and `npm -
 
 ## Latest verification and accuracy
 
-14 unit tests pass, including CSV aliases/invalid values, transactional append/replace,
+15 unit tests pass, including CSV aliases/invalid values, transactional append/replace,
 idempotence, vendor mapping, and known-denominator WAPE. Frontend build and lint pass.
 Live company/monthly/revenue quick run: ensemble 85.20%, trend 78.72%, SARIMA 83.48%,
 RF 84.42%, LSTM 86.41%, XGBoost 75.87%. Forecast accuracy means max(0,100-WAPE),
 measured on two expanding validation windows; it is not classification accuracy.
-NN held-out classification accuracy 96.90% (last-month baseline 95.81%, balanced
-accuracy 83.10%); TR 89.60%. NN scores 5,706 items; TR scores 5,620 with sufficient
+NN held-out classification accuracy 96.92% (last-month baseline 95.81%, balanced
+accuracy 83.73%); TR 89.61% (last-month baseline 86.49%, balanced accuracy 81.80%).
+NN scores 5,706 items; TR scores 5,620 with sufficient
 lag history. Prediction month is April 2025, the month after the dataset cutoff,
 not the wall-clock current month. Classification tests cover June 2024–March 2025.
 
@@ -76,7 +104,6 @@ code/configuration change, or a different output granularity; a page refresh or
 scenario edit does not change it.
 
 The scores are evidence from historical out-of-sample tests, not a guarantee about
-future months. The classifier scores also need imbalance context: NN rev9 is 96.90%
-versus a 95.81% persistence baseline with 83.10% balanced accuracy; TR rev8 is
-89.60% versus an 86.47% baseline with 81.80% balanced accuracy. Fresh actuals should
+future months. Both classifier exports carry the repaired SQL fingerprint
+`c98bf93f1ab1ad9817a99abd86d59b9264ffef1ccbbfc115db5a63a63271d6c0`. Fresh actuals should
 be appended and monitored before treating any model as production-certified.

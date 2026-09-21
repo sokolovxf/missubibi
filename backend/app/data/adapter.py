@@ -58,7 +58,7 @@ class DataAdapter:
                         ORDER BY so_internal_id
                     ) AS rn FROM Sales_Order_Merged
                 )
-                SELECT `year_month` AS month, item_code AS item,
+                SELECT TRIM(REPLACE(`year_month`, CHAR(13), '')) AS month, item_code AS item,
                     product_category_2 AS product, company_name AS customer,
                     fa_sub_industries AS industry, {vendor} AS vendor,
                     quantity AS actual_units, total_revenue_thb AS revenue,

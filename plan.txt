@@ -13,7 +13,8 @@ forecast-run registry and scheduled refresh.
 Still open: origin-safe classifier regressors inside every forecast validation
 routine (disabled); exact full notebook search parity; fitted-estimator rollback
 and production A/B routing. Actual vendor mappings must be supplied. Daily/weekly
-values remain allocated monthly estimates until reliable dated data is available.
+values remain allocated monthly estimates until native daily/weekly modeling is
+implemented.
 
 ---
 
