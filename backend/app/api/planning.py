@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 import threading
 import time
+import json
+from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
@@ -13,6 +15,28 @@ router = APIRouter(prefix='/api/planning')
 _pool = ThreadPoolExecutor(max_workers=2)
 _jobs = {}
 _lock = threading.RLock()
+_JOB_ROOT = Path(__file__).resolve().parents[2] / 'var' / 'jobs'
+
+
+def _job_file(job_id):
+    return _JOB_ROOT / f'{job_id}.json'
+
+
+def _save_job(job_id, job):
+    _JOB_ROOT.mkdir(parents=True, exist_ok=True)
+    temporary = _JOB_ROOT / f'{job_id}.tmp'
+    temporary.write_text(json.dumps(job, allow_nan=False))
+    temporary.replace(_job_file(job_id))
+
+
+def _load_job(job_id):
+    path = _job_file(job_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
 
 
 class ForecastRequest(BaseModel):
@@ -22,6 +46,8 @@ class ForecastRequest(BaseModel):
     filters: dict[str, str] = Field(default_factory=dict)
     value_col: Literal['revenue','actual_units'] = 'revenue'
     granularity: Literal['daily','weekly','monthly','quarterly','yearly'] = 'monthly'
+    calendar: Literal['calendar','fiscal_apr'] = 'calendar'
+    use_classifier_signals: bool = False
     horizon: int = Field(default=12, ge=1, le=120)
     fast: bool = True
 
@@ -49,9 +75,14 @@ def options():
 
 @router.get('/history')
 def history(dimension: str='total', dimension_value: str | None=None,
-            value_col: str='revenue', granularity: str='monthly'):
+            value_col: str='revenue', granularity: str='monthly', calendar: str='calendar', native: bool=False):
     try:
-        return adapter.get_series(dimension, dimension_value, value_col, granularity).to_dict('records')
+        if native:
+            return adapter.get_native_series(dimension, dimension_value, value_col, granularity).to_dict('records')
+        fiscal_start = 4 if calendar == 'fiscal_apr' else 1 if calendar == 'calendar' else None
+        if fiscal_start is None: raise ValueError('Unsupported calendar')
+        return adapter.get_series(dimension, dimension_value, value_col, granularity,
+                                  fiscal_start_month=fiscal_start).to_dict('records')
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -90,6 +121,7 @@ def _run(job_id, params):
         logging.getLogger(__name__).exception('Forecast job failed')
     with _lock:
         _jobs[job_id].update(status='done', result=result, finished=time.time())
+        _save_job(job_id, _jobs[job_id])
 
 
 @router.post('/forecast/run', status_code=202)
@@ -106,6 +138,7 @@ def start(params: ForecastRequest):
                 del _jobs[oldest]
         job_id = uuid4().hex
         _jobs[job_id] = {'status':'running', 'result':None}
+        _save_job(job_id, _jobs[job_id])
     _pool.submit(_run, job_id, params.model_dump())
     return {'status':'running', 'job_id':job_id}
 
@@ -114,6 +147,8 @@ def start(params: ForecastRequest):
 def status(job_id: str):
     with _lock:
         job = _jobs.get(job_id)
+        if job is None:
+            job = _load_job(job_id)
         if job is None:
             raise HTTPException(404, 'Job not found or expired')
         return {'status':'running', 'job_id':job_id} if job['status']=='running' else {**job['result'], 'job_id':job_id}

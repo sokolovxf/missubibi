@@ -308,6 +308,21 @@ input[type="range"] {
   display: block;
   margin-top: 7px;
 }
+.signal-toggle {
+  grid-column: span 2;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #7c878e;
+  font-size: 10px;
+}
+.signal-toggle input {
+  accent-color: #ba3741;
+}
+.signal-toggle small {
+  color: #9aa4aa;
+  margin-left: 4px;
+}
 .kpis {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

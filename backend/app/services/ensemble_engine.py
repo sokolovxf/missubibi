@@ -43,7 +43,7 @@ def run_member(name, frame, horizon, fast=True):
         return {'status': 'unavailable', 'message': message}
 
 
-def evaluate_member(name, frame, fast=True, granularity='monthly'):
+def evaluate_member(name, frame, fast=True, granularity='monthly', fiscal_start_month=1):
     n = len(frame)
     errors, scales, fold_rows = [], [], []
     # Two expanding windows with up to 12 monthly observations per test fold.
@@ -56,12 +56,12 @@ def evaluate_member(name, frame, fast=True, granularity='monthly'):
         if result.get('status') != 'ok':
             continue
         from app.data.adapter import resample_monthly
-        y = resample_monthly(train, granularity)['value'].to_numpy(float)
+        y = resample_monthly(train, granularity, fiscal_start_month=fiscal_start_month)['value'].to_numpy(float)
         lag = {'monthly':12, 'daily':365, 'weekly':52, 'quarterly':4, 'yearly':1}[granularity]
         scale = float(np.abs(y[lag:]-y[:-lag]).mean()) if len(y)>lag else 0.
-        actual = resample_monthly(frame.iloc[end:end+width], granularity)['value'].to_numpy(float)
+        actual = resample_monthly(frame.iloc[end:end+width], granularity, fiscal_start_month=fiscal_start_month)['value'].to_numpy(float)
         predicted_frame = pd.DataFrame({'month':result['forecast']['months'], 'value':result['forecast']['point']})
-        predicted = resample_monthly(predicted_frame, granularity)['value'].to_numpy(float)
+        predicted = resample_monthly(predicted_frame, granularity, fiscal_start_month=fiscal_start_month)['value'].to_numpy(float)
         error = float(np.abs(actual-predicted).mean())
         errors.append(error)
         scales.append(scale)
@@ -94,8 +94,9 @@ def evaluate_member(name, frame, fast=True, granularity='monthly'):
 
 
 def run_ensemble_forecast(sales_df, horizon=12, fast=True, **kwargs):
+    fiscal_start_month = kwargs.get('fiscal_start_month', 1)
     def member(name):
-        validation = evaluate_member(name, sales_df, fast, kwargs.get('granularity','monthly'))
+        validation = evaluate_member(name, sales_df, fast, kwargs.get('granularity','monthly'), fiscal_start_month)
         result = run_member(name, sales_df, horizon, fast)
         return name, result, validation
     with ThreadPoolExecutor(max_workers=3) as pool:

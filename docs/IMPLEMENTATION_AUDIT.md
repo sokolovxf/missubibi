@@ -39,6 +39,7 @@ confirm.
 - One SQL adapter used by the new planning service and legacy sales analytics. Preserves existing deduplication assumptions, strips imported carriage returns, supports item/product/customer/industry/vendor filters, and permits combinations of filters.
 - Monthly source series with missing months filled through the global dataset cutoff; no last-sale truncation of quiet items.
 - Monthly/daily/weekly/quarterly/yearly views. Calendar-day allocation conserves monthly totals, including leap days and partial boundary weeks. Daily/weekly values are explicitly estimates, not observed transactions.
+- Native transaction-date daily/weekly history route, fiscal Apr–Mar aggregation option, persisted per-item inventory-input mappings, and durable completed-job records.
 - Corrected trend baseline, original-unit chronological error metrics, and approximate prediction intervals.
 - Five forecasting adapters plus a weighted ensemble. Shared expanding-window validation, inverse-MASE weights, minimum weight 0.05, and explicit unavailable/excluded members. Validation errors are calculated at the selected output granularity, while fitting remains monthly.
 - Isolated model worker processes with timeouts to prevent native OpenMP/PyTorch conflicts and contain engine crashes. API queue is bounded, job IDs are unique, and completed jobs expire.
@@ -47,6 +48,7 @@ confirm.
 - LSTM uses consistent log1p inputs/targets and expm1 inversion, including zero-sales months. Verified real revenue forecasts in hundreds of millions of THB rather than near-zero values.
 - XGBoost fixes: missing contextlib import, removed pandas Series.append, DatetimeIndex fiscal-year handling, independent holdout length, removal of direct target feature, and shifted rolling features. Installed the missing local Homebrew libomp runtime.
 - New dashboard with restrained red/neutral styling, responsive layout, live history, sparklines, interval chart, draggable planning values, keyboard-editable period table, scenario slider/reset, CSV export, model comparison, data coverage, and classifier readiness/prediction screens.
+- Lead-time inventory workspace with supplier lead time, safety stock, reorder points, persisted on-hand inputs, suggested order quantities, order-by dates, and expected arrivals.
 - Horizon slider reruns an existing forecast on release (or keyboard change). Model forecast and edited scenario remain separate.
 - Legacy forecast HTTP paths now delegate to the validated common service, including new trend/ensemble paths and classifier aliases. Baseline dashboard accuracy is no longer presented as model accuracy.
 - Forecast-run registry stores parameters, data/code fingerprints, diagnostics, results, and active revisions with atomic writes. Recorded forecast rollback and comparison endpoints are available.
@@ -56,14 +58,14 @@ confirm.
 ## Remaining decisions and deployment scope
 
 1. **NN/TR certification:** rev9 and rev8 production inference, chronological held-out diagnostics, SavedModel exports, and refresh triggers are implemented locally. The scores are evidence on the repaired SQL snapshot; fresh months still need monitoring before a production SLA is claimed.
-2. **Classifier exogenous regressors:** intentionally disabled in forecast validation. Enabling them requires every engine-internal origin to freeze the classifier signal, so this is a validation design decision rather than a missing UI artifact.
-3. **CSV imports and vendors:** CSV preview, validation, append/replace, duplicate protection, and mapping-file support are implemented. The supplied Mitsubishi schema has no vendor relationship, so vendor-level planning remains unavailable until an owner supplies a mapping.
-4. **Daily/weekly model semantics:** source transaction dates are preserved and the UI provides conservation-safe daily/weekly allocations from monthly source totals. Native daily model training remains a separate modeling decision.
+2. **Classifier exogenous regressors:** now exposed as an explicit experimental forecast option. The default remains disabled; production certification still requires origin-frozen signals for every engine-internal validation origin.
+3. **CSV imports and vendors:** CSV preview, validation, append/replace, duplicate protection, vendor mapping, and per-item inventory-input mapping are implemented. The supplied Mitsubishi schema has no vendor relationship, so vendor-level planning remains unavailable until an owner supplies a mapping.
+4. **Daily/weekly model semantics:** observed transaction-date daily/weekly history is now available through the native history route. Forecast engines still use the monthly contract and allocate forecasts for daily/weekly views; native-frequency training for every engine remains a separate modeling decision.
 5. **Full notebook parity:** RF/LSTM service adapters are correctness-focused implementations of the September work, not a claim that every notebook search, feature trial, or diagnostic has been reproduced.
 6. **Model registry scope:** the registry versions reproducible forecast runs, not serialized fitted estimator binaries. Production traffic experiments and binary-weight rollback remain deployment work.
 7. **Data rules:** composite order-line deduplication still needs business-owner confirmation. Calendar quarter/year boundaries are used; full Mitsubishi fiscal reporting is not implemented for those views.
-8. **Lead-time inventory inputs:** the new planner uses SQL demand history to calculate lead-time demand, safety stock, reorder points, order-by dates, and expected arrival. Supplier lead time, warehouse on-hand, purchase orders, receipts, and vendor mappings are not present in the original sales files; the UI labels these as explicit planning inputs.
-9. **Operational scope:** local single-process application, in-memory job queue/cache, local registry. Multi-worker/distributed scheduling, authentication, and durable job recovery need separate deployment work.
+8. **Lead-time inventory inputs:** the planner uses SQL demand history and now accepts persisted per-item on-hand and supplier lead-time CSV inputs. Purchase orders, receipts, and vendor mappings still need to be supplied for a fully operational procurement view.
+9. **Operational scope:** completed jobs are persisted to the local job store and API-key protection is available through `PLANNING_API_KEY`. Multi-worker/distributed scheduling, shared durable storage, and full user authentication still need deployment work.
 
 ## Corrected plan assumptions
 

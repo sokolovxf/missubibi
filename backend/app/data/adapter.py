@@ -13,7 +13,7 @@ _lock = threading.RLock()
 _cache = {'data': None, 'time': 0}
 
 
-def resample_monthly(frame, granularity, columns=('value',)):
+def resample_monthly(frame, granularity, columns=('value',), fiscal_start_month=1):
     """Allocate monthly totals to calendar days before summing Monday-based weeks.
 
     This conserves totals, including leap days and partial boundary weeks.
@@ -21,6 +21,8 @@ def resample_monthly(frame, granularity, columns=('value',)):
     """
     if granularity not in GRANULARITIES:
         raise ValueError('Unsupported granularity')
+    if not 1 <= int(fiscal_start_month) <= 12:
+        raise ValueError('fiscal_start_month must be between 1 and 12')
     df = frame.copy()
     df['month'] = pd.to_datetime(df['month'])
     df = df.set_index('month')[list(columns)].sort_index()
@@ -35,7 +37,14 @@ def resample_monthly(frame, granularity, columns=('value',)):
         if granularity == 'weekly':
             df = df.resample('W-MON', label='left', closed='left').sum()
     elif granularity != 'monthly':
-        df = df.resample({'quarterly': 'QS', 'yearly': 'YS'}[granularity]).sum()
+        if int(fiscal_start_month) == 1:
+            df = df.resample({'quarterly': 'QS', 'yearly': 'YS'}[granularity]).sum()
+        else:
+            offset = pd.DateOffset(months=int(fiscal_start_month) - 1)
+            shifted = df.copy()
+            shifted.index = shifted.index - offset
+            df = shifted.resample({'quarterly': 'QS', 'yearly': 'YS'}[granularity]).sum()
+            df.index = df.index + offset
     df.index.name = 'month'
     df = df.reset_index()
     df['month'] = df['month'].dt.strftime('%Y-%m-%d')
@@ -58,7 +67,8 @@ class DataAdapter:
                         ORDER BY so_internal_id
                     ) AS rn FROM Sales_Order_Merged
                 )
-                SELECT TRIM(REPLACE(`year_month`, CHAR(13), '')) AS month, item_code AS item,
+                SELECT sales_order_date AS order_date,
+                    TRIM(REPLACE(`year_month`, CHAR(13), '')) AS month, item_code AS item,
                     product_category_2 AS product, company_name AS customer,
                     fa_sub_industries AS industry, {vendor} AS vendor,
                     quantity AS actual_units, total_revenue_thb AS revenue,
@@ -67,6 +77,7 @@ class DataAdapter:
                 FROM deduped WHERE rn = 1
             """
             df = pd.read_sql(query, engine)
+            df['order_date'] = pd.to_datetime(df['order_date'], errors='coerce')
             for col in ('month', *DIMENSIONS[1:]):
                 df[col] = df[col].astype('string').str.strip().replace('', pd.NA)
             dates = pd.to_datetime(df['month'], format='%Y-%m', errors='coerce')
@@ -80,6 +91,10 @@ class DataAdapter:
                 df = df.iloc[:0]
             if not imported.empty:
                 df = pd.concat([df, imported], ignore_index=True)
+            if 'order_date' not in df:
+                df['order_date'] = pd.to_datetime(df['month'], errors='coerce')
+            else:
+                df['order_date'] = pd.to_datetime(df['order_date'], errors='coerce').fillna(pd.to_datetime(df['month'], errors='coerce'))
             for col in DIMENSIONS[1:]:
                 df[col] = df[col].astype('string').str.strip().replace('', pd.NA)
             df['vendor'] = df['vendor'].fillna(df['item'].map(vendors))
@@ -87,7 +102,7 @@ class DataAdapter:
             return df.copy()
 
     def get_series(self, dimension='total', dimension_value=None, value_col='revenue',
-                   granularity='monthly', filters=None):
+                   granularity='monthly', filters=None, fiscal_start_month=1):
         if dimension not in DIMENSIONS or value_col not in VALUE_COLUMNS:
             raise ValueError('Unsupported dimension or metric')
         df = self._get_base_data()
@@ -110,7 +125,42 @@ class DataAdapter:
         idx = pd.date_range(start, last, freq='MS').strftime('%Y-%m-%d')
         values = values.reindex(idx, fill_value=0)
         result = values.rename_axis('month').reset_index(name='value')
-        return resample_monthly(result, granularity)
+        return resample_monthly(result, granularity, fiscal_start_month=fiscal_start_month)
+
+    def get_native_series(self, dimension='total', dimension_value=None, value_col='revenue',
+                          granularity='daily', filters=None):
+        """Return observed transaction-date demand for native daily/weekly views.
+
+        Forecast engines continue to fit the monthly source contract; this method
+        is for audit/history displays and future native-frequency model adapters.
+        """
+        if granularity not in ('daily', 'weekly'):
+            raise ValueError('Native source series supports daily or weekly only')
+        if dimension not in DIMENSIONS or value_col not in VALUE_COLUMNS:
+            raise ValueError('Unsupported dimension or metric')
+        df = self._get_base_data()
+        selected = dict(filters or {})
+        if dimension != 'total':
+            if not dimension_value:
+                raise ValueError('Select a dimension value')
+            selected[dimension] = dimension_value
+        for key, value in selected.items():
+            if key not in DIMENSIONS[1:]:
+                raise ValueError('Unsupported filter')
+            if value:
+                df = df[df[key] == value]
+        dates = pd.to_datetime(df['order_date'], errors='coerce')
+        df = df.loc[dates.notna()].copy()
+        if df.empty:
+            return pd.DataFrame(columns=['month', 'value'])
+        df['order_date'] = dates.loc[dates.notna()].dt.normalize()
+        values = df.groupby('order_date')[value_col].sum()
+        idx = pd.date_range(values.index.min(), values.index.max(), freq='D')
+        daily = values.reindex(idx, fill_value=0.0).rename_axis('month').reset_index(name='value')
+        if granularity == 'weekly':
+            daily = daily.set_index('month').resample('W-MON', label='left', closed='left').sum().reset_index()
+        daily['month'] = daily['month'].dt.strftime('%Y-%m-%d')
+        return daily
 
     def get_dimension_values(self, dimension):
         if dimension not in DIMENSIONS[1:]:

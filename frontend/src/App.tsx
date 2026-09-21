@@ -63,6 +63,9 @@ type InventoryRow = {
   target_stock_units: number;
   on_hand_units: number;
   suggested_order_units: number;
+  lead_time_days: number;
+  on_hand_source?: string;
+  lead_time_source?: string;
   days_of_cover: number | null;
   order_by_date: string;
   expected_arrival_date: string;
@@ -412,6 +415,8 @@ export default function App() {
     [value, setValue] = useState(""),
     [filters, setFilters] = useState<Record<string, string>>({});
   const [granularity, setGranularity] = useState("monthly"),
+    [calendar, setCalendar] = useState("calendar"),
+    [useClassifierSignals, setUseClassifierSignals] = useState(false),
     [metric, setMetric] = useState("revenue"),
     [horizon, setHorizon] = useState(12),
     [model, setModel] = useState("trend");
@@ -661,6 +666,8 @@ export default function App() {
           filters,
           value_col: metric,
           granularity,
+          calendar,
+          use_classifier_signals: useClassifierSignals,
           horizon,
           fast: true,
         }),
@@ -939,6 +946,18 @@ export default function App() {
                     ))}
                   </select>
                 </div>
+                <div className="control">
+                  <label htmlFor="calendar">Calendar</label>
+                  <select
+                    id="calendar"
+                    value={calendar}
+                    disabled={busy}
+                    onChange={(e) => setCalendar(e.target.value)}
+                  >
+                    <option value="calendar">Calendar year</option>
+                    <option value="fiscal_apr">Fiscal year · Apr–Mar</option>
+                  </select>
+                </div>
                 <div className="control horizon">
                   <label htmlFor="horizon">
                     Horizon <b>{horizon} periods</b>
@@ -1004,6 +1023,15 @@ export default function App() {
                         </select>
                       </label>
                     ))}
+                    <label className="signal-toggle">
+                      <input
+                        type="checkbox"
+                        checked={useClassifierSignals}
+                        onChange={(e) => setUseClassifierSignals(e.target.checked)}
+                      />
+                      Experimental classifier signals
+                      <small>Uses dated item probabilities as forecast context.</small>
+                    </label>
                   </div>
                 )}
               </section>
@@ -1535,7 +1563,7 @@ export default function App() {
                     <tbody>
                       {inventoryRows.map((row) => (
                         <tr key={row.key}>
-                          <td><strong>{row.key}</strong><small>{row.months_with_source_data} months with demand · {row.vendor || "Vendor unmapped"}</small></td>
+                          <td><strong>{row.key}</strong><small>{row.months_with_source_data} months with demand · {row.vendor || "Vendor unmapped"} · {row.lead_time_days}d lead time</small></td>
                           <td>{row.run_rate_units_per_month.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
                           <td>{row.lead_time_demand_units.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
                           <td>{row.safety_stock_units.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>

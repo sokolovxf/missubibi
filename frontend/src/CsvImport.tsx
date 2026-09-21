@@ -114,6 +114,8 @@ export default function CsvImport({
         </p>
         <p>
           For vendor mapping only, use two columns: <b>item, vendor</b>.
+          For inventory inputs, use <b>item, on_hand_units, lead_time_days</b>
+          (either numeric column may be supplied).
         </p>
         <div className="upload-zone">
           <label htmlFor="csv-file">
@@ -152,6 +154,8 @@ export default function CsvImport({
               <span>
                 {preview.kind === "vendor_mapping"
                   ? "Item → vendor mapping"
+                  : preview.kind === "inventory_mapping"
+                    ? "Item → inventory inputs"
                   : `${preview.period_start} — ${preview.period_end}`}
               </span>
             </div>

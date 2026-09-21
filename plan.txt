@@ -10,14 +10,14 @@ CSV imports and vendor mapping; trained NN rev9 + TR rev8 demand predictions;
 classifier accuracy/baselines/confusion matrices; training controls and refresh;
 forecast-run registry and scheduled refresh.
 
-Still open: origin-safe classifier regressors inside every forecast validation
-routine (disabled); exact full notebook search parity; fitted-estimator rollback
-and production A/B routing. Actual vendor mappings, warehouse on-hand, supplier
-lead times, purchase orders, and receipts must be supplied for operational
-inventory planning. Lead-time inventory calculations are now implemented from
-the canonical SQL demand history; daily/weekly views remain conservation-safe
-allocations from monthly source totals until native daily/weekly model training
-is chosen.
+Still open: full origin-safe certification of the opt-in classifier regressors;
+exact full notebook search parity; fitted-estimator rollback and production A/B
+routing. Vendor mappings, purchase orders, and receipts still need to be
+supplied for operational procurement planning. Inventory on-hand and supplier
+lead times can now be imported per item. Observed daily/weekly history and
+fiscal Apr–Mar calendar boundaries are wired; forecast engines still allocate
+daily/weekly forecasts from the monthly source contract until native-frequency
+training is chosen.
 
 ---
 

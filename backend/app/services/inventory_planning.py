@@ -66,6 +66,8 @@ def build_lead_time_plan(
     if missing:
         raise ValueError(f"Inventory source is missing: {', '.join(sorted(missing))}")
     source = frame.copy()
+    from app.services.csv_import import load_inventory_overlay
+    saved_inputs = load_inventory_overlay()
     source["month"] = pd.to_datetime(source["month"], errors="coerce")
     source["actual_units"] = pd.to_numeric(source["actual_units"], errors="coerce").fillna(0.0)
     source = source.loc[source["month"].notna()].copy()
@@ -112,22 +114,25 @@ def build_lead_time_plan(
     rows: list[dict[str, Any]] = []
     for key, monthly_row in monthly_matrix.iterrows():
         monthly = monthly_row.astype(float)
+        configured = saved_inputs.get(str(key), {}) if dimension == "item" else {}
+        effective_lead_time = int(configured.get("lead_time_days", lead_time_days))
+        effective_on_hand = float(configured.get("on_hand_units", on_hand_units))
         recent = float(monthly.tail(3).mean())
         annual = float(monthly.mean())
         run_rate = max(0.0, recent * 0.70 + annual * 0.30)
         previous = float(monthly.iloc[-6:-3].mean()) if len(monthly) >= 6 else 0.0
         trend_pct = ((recent / previous) - 1.0) * 100.0 if previous > 0 else None
-        lead_demand = run_rate * lead_time_days / MONTH_DAYS
+        lead_demand = run_rate * effective_lead_time / MONTH_DAYS
         safety_stock = run_rate * safety_stock_months
         reorder_point = lead_demand + safety_stock
-        target_stock = run_rate * (lead_time_days / MONTH_DAYS + coverage_months + safety_stock_months)
-        order_qty = max(0.0, target_stock - on_hand_units)
-        days_cover = on_hand_units / run_rate * MONTH_DAYS if run_rate > 0 else None
-        if run_rate > 0 and on_hand_units > reorder_point:
-            order_by = planning_date + pd.to_timedelta(max(0.0, (on_hand_units - reorder_point) / run_rate * MONTH_DAYS), unit="D")
+        target_stock = run_rate * (effective_lead_time / MONTH_DAYS + coverage_months + safety_stock_months)
+        order_qty = max(0.0, target_stock - effective_on_hand)
+        days_cover = effective_on_hand / run_rate * MONTH_DAYS if run_rate > 0 else None
+        if run_rate > 0 and effective_on_hand > reorder_point:
+            order_by = planning_date + pd.to_timedelta(max(0.0, (effective_on_hand - reorder_point) / run_rate * MONTH_DAYS), unit="D")
         else:
             order_by = planning_date
-        arrival = order_by + pd.to_timedelta(lead_time_days, unit="D")
+        arrival = order_by + pd.to_timedelta(effective_lead_time, unit="D")
         rows.append(
             {
                 "dimension": dimension,
@@ -142,12 +147,15 @@ def build_lead_time_plan(
                 "safety_stock_units": round(safety_stock, 3),
                 "reorder_point_units": round(reorder_point, 3),
                 "target_stock_units": round(target_stock, 3),
-                "on_hand_units": round(on_hand_units, 3),
+                "on_hand_units": round(effective_on_hand, 3),
                 "suggested_order_units": round(order_qty, 3),
+                "lead_time_days": effective_lead_time,
+                "on_hand_source": "imported inventory input" if "on_hand_units" in configured else "planner default",
+                "lead_time_source": "imported inventory input" if "lead_time_days" in configured else "planner default",
                 "days_of_cover": round(days_cover, 1) if days_cover is not None else None,
                 "order_by_date": order_by.strftime("%Y-%m-%d"),
                 "expected_arrival_date": arrival.strftime("%Y-%m-%d"),
-                "status": "Order now" if on_hand_units <= reorder_point else "Covered",
+                "status": "Order now" if effective_on_hand <= reorder_point else "Covered",
                 "months_with_source_data": int((monthly > 0).sum()),
             }
         )

@@ -37,6 +37,18 @@ class ImportAccuracyTests(unittest.TestCase):
                 self.assertEqual(csv_import.load_overlay()[2],{'B':'Vendor B'})
             engine.dispose()
 
+    def test_inventory_mapping_preview_and_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine=create_engine('sqlite:///'+directory+'/imports.db')
+            with patch.object(csv_import,'ROOT',Path(directory)),patch.object(csv_import,'engine',engine):
+                mapping=csv_import.preview(b'item,on_hand_units,lead_time_days\nA,120,45\n','inventory.csv')
+                self.assertEqual(mapping['kind'],'inventory_mapping')
+                self.assertEqual(mapping['errors'],[])
+                result=csv_import.commit(mapping['token'],'append')
+                self.assertEqual(result['kind'],'inventory_mapping')
+                self.assertEqual(csv_import.load_inventory_overlay()['A']['lead_time_days'],45.)
+            engine.dispose()
+
     def test_wape_and_undefined_zero_denominator(self):
         frame=pd.DataFrame({'month':pd.date_range('2021-01-01',periods=48,freq='MS'),'value':[100.]*48})
         def predict(name,train,horizon,fast):

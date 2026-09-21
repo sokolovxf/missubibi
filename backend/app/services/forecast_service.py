@@ -27,13 +27,17 @@ def _json_safe(value):
 
 
 def forecast(params, force=False):
+    fiscal_start_month = 4 if params.get('calendar') == 'fiscal_apr' else 1
     monthly = adapter.get_series(dimension=params['dimension'], dimension_value=params.get('dimension_value'),
-        value_col=params['value_col'], filters=params.get('filters'))
+        value_col=params['value_col'], filters=params.get('filters'), fiscal_start_month=1)
     if monthly.empty:
         return {'status': 'insufficient_history', 'message': 'No sales match these filters.'}
-    # Historical signals are retained for research. Engine-internal validation
-    # must support origin-specific regressors before enabling them in forecasts.
+    # Classifier regressors are opt-in experimental plumbing. The default remains
+    # signal-free because production certification requires origin-frozen features.
     signal_context=None
+    if params.get('use_classifier_signals'):
+        from app.services.classifier_signals import build_context
+        signal_context = build_context(adapter._get_base_data(), params)
     monthly.attrs['classifier_signals']=signal_context
     fingerprint = hashlib.sha256(monthly.to_csv(index=False).encode()).hexdigest()
     key = hashlib.sha256((fingerprint+json.dumps(params, sort_keys=True)+json.dumps((signal_context or {}).get('versions',{}),sort_keys=True)).encode()).hexdigest()
@@ -46,18 +50,19 @@ def forecast(params, force=False):
               'weekly': math.ceil(horizon*7/28)+1, 'quarterly': horizon*3+2,
               'yearly': horizon*12+11}[granularity]
     if params['model'] == 'ensemble':
-        result = run_ensemble_forecast(monthly, horizon=months, fast=params['fast'], granularity=granularity)
+        result = run_ensemble_forecast(monthly, horizon=months, fast=params['fast'], granularity=granularity,
+                                       fiscal_start_month=fiscal_start_month)
     else:
         result = run_member(params['model'], monthly, months, params['fast'])
         if result.get('status')=='ok':
-            result['validation']=evaluate_member(params['model'],monthly,params['fast'],granularity)
+            result['validation']=evaluate_member(params['model'],monthly,params['fast'],granularity,fiscal_start_month)
             result['validation'].pop('_folds',None)
     if result.get('status') != 'ok':
         return result
     result = _json_safe(copy.deepcopy(result))
     def convert(f):
         df = pd.DataFrame({'month': f['months'], **{k: f[k] for k in ('point','lower_90','upper_90')}})
-        df = resample_monthly(df, granularity, ('point', 'lower_90', 'upper_90')).iloc[:horizon]
+        df = resample_monthly(df, granularity, ('point', 'lower_90', 'upper_90'), fiscal_start_month).iloc[:horizon]
         return {**f, 'months': df['month'].tolist(), **{k: df[k].tolist() for k in ('point','lower_90','upper_90')},
                 'horizon': len(df), 'annual_total': float(df['point'].sum()), 'annual_yoy_pct': None}
     result['forecast'] = convert(result['forecast'])
@@ -65,9 +70,9 @@ def forecast(params, force=False):
         if member.get('status') == 'ok':
             member['forecast'] = convert(member['forecast'])
     result['classifier_signals']={'status':'enabled' if signal_context else 'unavailable', 'versions':(signal_context or {}).get('versions',{}), 'policy':(signal_context or {}).get('policy')}
-    result.update(history=resample_monthly(monthly, granularity).to_dict('records'),
+    result.update(history=resample_monthly(monthly, granularity, fiscal_start_month=fiscal_start_month).to_dict('records'),
                   data_fingerprint=fingerprint, cached=False, params=params,
-                  source_granularity='monthly',
+                  source_granularity='monthly', calendar=params.get('calendar','calendar'),
                   allocation_note=('Daily/weekly values are allocated monthly estimates, not observed transactions. Boundary periods may be partial.'
                     if granularity in ('daily','weekly') else 'Calendar aggregates. The first or last period may be partial.'),
                   scenarios={'optimistic': result['forecast']['upper_90'],

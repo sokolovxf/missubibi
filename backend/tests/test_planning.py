@@ -28,6 +28,20 @@ class PlanningTests(unittest.TestCase):
         weekly=resample_monthly(frame,'weekly')
         self.assertTrue((pd.to_datetime(weekly.month).dt.dayofweek==0).all())
 
+    def test_fiscal_apr_boundaries_and_native_transactions(self):
+        frame=pd.DataFrame({'month':['2024-03-01','2024-04-01','2024-05-01','2025-03-01'],
+            'value':[1.,2.,3.,4.]})
+        quarterly=resample_monthly(frame,'quarterly',fiscal_start_month=4)
+        self.assertEqual(quarterly.month.iloc[0],'2024-01-01')
+        self.assertAlmostEqual(quarterly.value.sum(),10.)
+        rows=pd.DataFrame({'order_date':pd.to_datetime(['2024-01-01','2024-01-03','2024-01-08']),
+            'month':['2024-01-01']*3,'item':['A']*3,'revenue':[10.,20.,30.], 'actual_units':[1.,2.,3.]})
+        with patch.object(DataAdapter,'_get_base_data',return_value=rows):
+            daily=DataAdapter().get_native_series('item','A','revenue','daily')
+            weekly=DataAdapter().get_native_series('item','A','revenue','weekly')
+        self.assertEqual(daily.value.sum(),60.)
+        self.assertEqual(weekly.value.sum(),60.)
+
     def test_combined_filters_and_quiet_tail(self):
         rows=pd.DataFrame({'month':['2024-01-01','2024-02-01','2024-03-01'],
             'item':['a','a','b'],'customer':['c','d','c'],'revenue':[10.,20.,30.]})
