@@ -63,7 +63,7 @@ confirm.
 4. **Daily/weekly model semantics:** observed transaction-date daily/weekly history is now available through the native history route. Forecast engines still use the monthly contract and allocate forecasts for daily/weekly views; native-frequency training for every engine remains a separate modeling decision.
 5. **Full notebook parity:** RF/LSTM service adapters are correctness-focused implementations of the September work, not a claim that every notebook search, feature trial, or diagnostic has been reproduced.
 6. **Model registry scope:** the registry versions reproducible forecast runs, not serialized fitted estimator binaries. Production traffic experiments and binary-weight rollback remain deployment work.
-7. **Data rules:** composite order-line deduplication still needs business-owner confirmation. Calendar quarter/year boundaries are used; full Mitsubishi fiscal reporting is not implemented for those views.
+7. **Data rules:** composite order-line deduplication still needs business-owner confirmation. Calendar and Apr–Mar fiscal aggregation are available; any additional Mitsubishi fiscal reporting policy still needs confirmation.
 8. **Lead-time inventory inputs:** the planner uses SQL demand history and now accepts persisted per-item on-hand and supplier lead-time CSV inputs. Purchase orders, receipts, and vendor mappings still need to be supplied for a fully operational procurement view.
 9. **Operational scope:** completed jobs are persisted to the local job store and API-key protection is available through `PLANNING_API_KEY`. Multi-worker/distributed scheduling, shared durable storage, and full user authentication still need deployment work.
 
@@ -73,11 +73,11 @@ The original plan inverted optimistic/pessimistic bounds. Higher demand/revenue 
 
 ## Verification
 
-Run `cd backend && .venv/bin/python -m unittest discover -s tests -v` and `npm --prefix frontend run build` / `npm --prefix frontend run lint` from the repository root as appropriate. Regression tests cover conservation, leap dates, compound filters, quiet tails, chronological metrics, RF leakage/recursion, LSTM inversion, ensemble exclusions, API validation, classifier unavailability, and registry rollback. Live engine and browser smoke checks are recorded in the session handoff.
+Run `cd backend && .venv/bin/python -m unittest discover -s tests -v` and `npm --prefix frontend run build` / `npm --prefix frontend run lint` from the repository root as appropriate. Regression tests cover conservation, leap dates, fiscal boundaries, native transaction history, compound filters, quiet tails, chronological metrics, RF leakage/recursion, LSTM inversion, ensemble exclusions, inventory mappings, API validation, classifier unavailability, and registry rollback. Live engine and browser smoke checks are recorded in the session handoff.
 
 ## Latest verification and accuracy
 
-15 unit tests pass, including CSV aliases/invalid values, transactional append/replace,
+18 unit tests pass, including CSV aliases/invalid values, transactional append/replace,
 idempotence, vendor mapping, and known-denominator WAPE. Frontend build and lint pass.
 Live company/monthly/revenue quick run: ensemble 85.20%, trend 78.72%, SARIMA 83.48%,
 RF 84.42%, LSTM 86.41%, XGBoost 75.87%. Forecast accuracy means max(0,100-WAPE),
