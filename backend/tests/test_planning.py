@@ -7,6 +7,7 @@ import pandas as pd
 from pydantic import ValidationError
 from app.data.adapter import DataAdapter, resample_monthly
 from app.services import trend_engine, ensemble_engine, model_registry
+from app.services.inventory_planning import build_lead_time_plan
 from app.api.planning import ForecastRequest
 
 class PlanningTests(unittest.TestCase):
@@ -107,5 +108,21 @@ class PlanningTests(unittest.TestCase):
             result=classifier_runtime.predict('nn')
             self.assertEqual(result['status'],'unavailable')
             self.assertEqual(result['predictions'],[])
+
+    def test_lead_time_plan_uses_source_months_and_explicit_inputs(self):
+        frame = pd.DataFrame({
+            'month': pd.date_range('2024-01-01', periods=12, freq='MS').tolist() * 2,
+            'item': ['A'] * 12 + ['B'] * 12,
+            'actual_units': [100] * 12 + [0] * 9 + [50, 50, 50],
+        })
+        result = build_lead_time_plan(frame, lead_time_days=30, safety_stock_months=1,
+                                      coverage_months=2, limit=2, as_of='2024-12-31')
+        self.assertEqual(result['source_as_of'], '2024-12-31')
+        self.assertEqual(result['rows'][0]['key'], 'A')
+        row = result['rows'][0]
+        self.assertGreater(row['lead_time_demand_units'], 0)
+        self.assertEqual(row['status'], 'Order now')
+        self.assertEqual(row['expected_arrival_date'], '2025-01-30')
+        self.assertGreater(row['suggested_order_units'], row['lead_time_demand_units'])
 
 if __name__=='__main__':unittest.main()

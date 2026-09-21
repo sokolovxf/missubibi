@@ -1102,6 +1102,93 @@ footer b {
 .diagnostic-grid th {
   padding: 8px 12px;
 }
+.inventory-intro {
+  margin-top: 25px;
+  padding: 28px 32px;
+  display: flex;
+  justify-content: space-between;
+  gap: 32px;
+  align-items: flex-start;
+}
+.inventory-intro h2 {
+  font-size: 22px;
+  margin: 17px 0 10px;
+}
+.inventory-intro p {
+  max-width: 800px;
+  font-size: 12px;
+  color: #869198;
+  line-height: 1.9;
+}
+.inventory-source {
+  min-width: 130px;
+  padding-left: 20px;
+  border-left: 1px solid #e9edef;
+}
+.inventory-source strong,
+.inventory-source span {
+  display: block;
+}
+.inventory-source strong {
+  font-size: 18px;
+  font-weight: 550;
+  margin-bottom: 5px;
+}
+.inventory-source span {
+  font-size: 10px;
+  color: #8c989e;
+}
+.inventory-settings {
+  margin-top: 18px;
+  align-items: flex-end;
+}
+.inventory-settings .control {
+  min-width: 165px;
+}
+.inventory-settings .control small {
+  color: #98a3a8;
+  font-size: 9px;
+  line-height: 1.4;
+}
+.inventory-settings .primary {
+  margin-left: auto;
+}
+.inventory-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 22px 0;
+}
+.inventory-kpis .kpi {
+  min-height: 122px;
+}
+.inventory-table {
+  margin-top: 0;
+}
+.inventory-table table {
+  min-width: 1080px;
+}
+.inventory-table td,
+.inventory-table th {
+  white-space: nowrap;
+}
+.inventory-table td small {
+  max-width: 170px;
+}
+.number-input {
+  width: 100px !important;
+}
+.status-order {
+  color: #a4333c;
+  background: #fff0f1;
+}
+.inventory-note {
+  padding: 17px 23px 21px;
+  color: #87939a;
+  font-size: 10px;
+  line-height: 1.8;
+  border-top: 1px solid #eef0f2;
+}
 @media (max-width: 650px) {
   .heading-actions {
     flex-wrap: wrap;
@@ -1111,5 +1198,21 @@ footer b {
   }
   .classifier-stats {
     grid-template-columns: 1fr 1fr;
+  }
+  .inventory-intro {
+    display: block;
+    padding: 22px;
+  }
+  .inventory-source {
+    margin-top: 18px;
+    padding: 14px 0 0;
+    border-left: 0;
+    border-top: 1px solid #e9edef;
+  }
+  .inventory-kpis {
+    grid-template-columns: 1fr;
+  }
+  .inventory-settings .primary {
+    margin-left: 0;
   }
 }

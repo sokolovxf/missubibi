@@ -53,16 +53,17 @@ confirm.
 - Application-lifespan scheduler checks hourly and refreshes previously requested configurations on changed data or a new UTC month. Forecasts retrain inside fresh model worker processes; no exhaustive all-SKU/customer training is launched.
 - NN/TR inference wrappers and SavedModel export helper. Next-month feature tensors, input schema, trained cutoff, diagnostics, and decision threshold travel with the model. Missing/stale exports return unavailable/stale rather than fake probabilities.
 
-## Still dependent on missing artifacts or decisions
+## Remaining decisions and deployment scope
 
-1. **NN/TR production scores:** implemented and trained locally. NN rev9 architecture plus equal HistGradientBoosting blend and TR rev8 architecture/features run in an isolated TensorFlow worker. Fit/validation/test months are chronological; preprocessing is fit-only, threshold is validation-only. SavedModel, preprocessing, predictions, diagnostics, and test-only historical signals are versioned locally. Quick (12 epoch maximum) and full (100 maximum) training are available. Dataset changes trigger refresh after CSV imports and in the hourly scheduler.
-2. **Classifier exogenous regressors:** retained as experimental plumbing but disabled in the forecast service. Outer validation alone is insufficient: all engine-internal origins must also freeze signals. Validation-period classifier scores were excluded from historical exports because early stopping used those labels. Current probability indicators and item predictions work independently.
-3. **CSV imports and vendors:** preview/validate UTF-8 CSV, commit append or replace-active transactions to dedicated MySQL tables, preserve original source tables, skip exact duplicates, and apply item/vendor mapping files. Actual vendor relationships must still be supplied.
-4. **Daily/weekly true models:** the original transaction dates are now preserved in SQL, but the forecasting layer still fits monthly and allocates daily/weekly outputs. Native daily training is a separate model change.
-5. **Full notebook parity:** existing RF/LSTM adapters are simplified service adaptations of the September notebooks, not identical full notebook experiments. This work fixes their correctness and integration; it does not claim to reproduce every search, feature trial, or diagnostic in the notebooks.
-6. **Model registry scope:** versions reproducible forecast runs, not serialized fitted estimator binaries. A/B comparison is offline comparison of recorded runs; production traffic experiments and fitted-weight deployment rollback remain future work.
+1. **NN/TR certification:** rev9 and rev8 production inference, chronological held-out diagnostics, SavedModel exports, and refresh triggers are implemented locally. The scores are evidence on the repaired SQL snapshot; fresh months still need monitoring before a production SLA is claimed.
+2. **Classifier exogenous regressors:** intentionally disabled in forecast validation. Enabling them requires every engine-internal origin to freeze the classifier signal, so this is a validation design decision rather than a missing UI artifact.
+3. **CSV imports and vendors:** CSV preview, validation, append/replace, duplicate protection, and mapping-file support are implemented. The supplied Mitsubishi schema has no vendor relationship, so vendor-level planning remains unavailable until an owner supplies a mapping.
+4. **Daily/weekly model semantics:** source transaction dates are preserved and the UI provides conservation-safe daily/weekly allocations from monthly source totals. Native daily model training remains a separate modeling decision.
+5. **Full notebook parity:** RF/LSTM service adapters are correctness-focused implementations of the September work, not a claim that every notebook search, feature trial, or diagnostic has been reproduced.
+6. **Model registry scope:** the registry versions reproducible forecast runs, not serialized fitted estimator binaries. Production traffic experiments and binary-weight rollback remain deployment work.
 7. **Data rules:** composite order-line deduplication still needs business-owner confirmation. Calendar quarter/year boundaries are used; full Mitsubishi fiscal reporting is not implemented for those views.
-8. **Operational scope:** local single-process application, in-memory job queue/cache, local registry. Multi-worker/distributed scheduling, authentication, and durable job recovery need separate deployment work.
+8. **Lead-time inventory inputs:** the new planner uses SQL demand history to calculate lead-time demand, safety stock, reorder points, order-by dates, and expected arrival. Supplier lead time, warehouse on-hand, purchase orders, receipts, and vendor mappings are not present in the original sales files; the UI labels these as explicit planning inputs.
+9. **Operational scope:** local single-process application, in-memory job queue/cache, local registry. Multi-worker/distributed scheduling, authentication, and durable job recovery need separate deployment work.
 
 ## Corrected plan assumptions
 

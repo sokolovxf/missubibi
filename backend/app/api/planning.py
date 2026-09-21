@@ -56,6 +56,31 @@ def history(dimension: str='total', dimension_value: str | None=None,
         raise HTTPException(422, str(exc)) from exc
 
 
+@router.get('/inventory/lead-time')
+def lead_time_inventory(lead_time_days: int = 30, safety_stock_months: float = 1.0,
+                        coverage_months: float = 2.0, limit: int = 25,
+                        dimension: str = 'item', dimension_value: str | None = None,
+                        on_hand_units: float = 0.0, as_of: str | None = None):
+    """Calculate replenishment needs from the canonical Mitsubishi SQL sales frame."""
+    from app.services.inventory_planning import build_lead_time_plan
+    try:
+        return build_lead_time_plan(
+            adapter._get_base_data(),
+            lead_time_days=lead_time_days,
+            safety_stock_months=safety_stock_months,
+            coverage_months=coverage_months,
+            limit=limit,
+            dimension=dimension,
+            dimension_value=dimension_value,
+            on_hand_units=on_hand_units,
+            as_of=as_of,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, 'MySQL data is unavailable. Check the backend database connection.') from exc
+
+
 def _run(job_id, params):
     try:
         result = forecast(params)

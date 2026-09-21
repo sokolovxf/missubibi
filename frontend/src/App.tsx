@@ -48,6 +48,44 @@ type Result = Member & {
   warnings?: { message: string }[];
 };
 type Options = { dimensions: Record<string, string[]> };
+type InventoryRow = {
+  dimension: string;
+  key: string;
+  item: string | null;
+  vendor: string | null;
+  recent_avg_units: number;
+  annual_avg_units: number;
+  run_rate_units_per_month: number;
+  trend_pct: number | null;
+  lead_time_demand_units: number;
+  safety_stock_units: number;
+  reorder_point_units: number;
+  target_stock_units: number;
+  on_hand_units: number;
+  suggested_order_units: number;
+  days_of_cover: number | null;
+  order_by_date: string;
+  expected_arrival_date: string;
+  status: string;
+  months_with_source_data: number;
+};
+type InventoryPlan = {
+  status: string;
+  rows: InventoryRow[];
+  source_as_of: string | null;
+  planning_start: string | null;
+  source_rows: number;
+  total_groups: number;
+  vendor_mapping_available: boolean;
+  assumptions: {
+    lead_time_days: number;
+    safety_stock_months: number;
+    coverage_months: number;
+    on_hand_default_units: number;
+    run_rate_method: string;
+    source_note: string;
+  };
+};
 const models = [
   { id: "ensemble", name: "Ensemble", desc: "Validation-weighted blend" },
   { id: "sarima", name: "SARIMA", desc: "Seasonal statistical model" },
@@ -436,6 +474,14 @@ export default function App() {
   }>({ status: "idle" });
   const [trainingFast, setTrainingFast] = useState(true);
   const [reviewOnly, setReviewOnly] = useState(false);
+  const [inventory, setInventory] = useState<InventoryPlan | null>(null);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventorySettings, setInventorySettings] = useState({
+    leadTimeDays: 30,
+    safetyStockMonths: 1,
+    coverageMonths: 2,
+  });
+  const [inventoryOnHand, setInventoryOnHand] = useState<Record<string, number>>({});
   const request = useRef(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -457,6 +503,38 @@ export default function App() {
           if (data?.training) setTraining(data.training);
         })
         .catch((e) => setError(e.message));
+  }, [view]);
+  async function loadInventory() {
+    setInventoryLoading(true);
+    try {
+      const query = new URLSearchParams({
+        lead_time_days: String(inventorySettings.leadTimeDays),
+        safety_stock_months: String(inventorySettings.safetyStockMonths),
+        coverage_months: String(inventorySettings.coverageMonths),
+        limit: "40",
+        dimension: "item",
+      });
+      const data = await api<InventoryPlan>(`/inventory/lead-time?${query}`);
+      setInventory(data);
+      setInventoryOnHand((previous) => {
+        const next = { ...previous };
+        data.rows.forEach((row) => {
+          if (next[row.key] == null) next[row.key] = row.on_hand_units;
+        });
+        return next;
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Inventory planning failed");
+    } finally {
+      setInventoryLoading(false);
+    }
+  }
+  useEffect(() => {
+    if (view !== "inventory") return;
+    const timer = window.setTimeout(() => void loadInventory(), 0);
+    return () => window.clearTimeout(timer);
+    // Settings are applied with the button so planners can edit all assumptions together.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
   useEffect(
     () => () => {
@@ -506,6 +584,7 @@ export default function App() {
       setOptions(await api<Options>("/options"));
       setHistory(await api<Row[]>("/history"));
       setClassifier(await api<typeof classifier>("/classifiers"));
+      if (view === "inventory") await loadInventory();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Refresh failed");
     }
@@ -540,6 +619,24 @@ export default function App() {
       result?.members ||
       (result ? { [result.params?.model || model]: result } : {}),
     [result, model],
+  );
+  const inventoryRows = useMemo(
+    () =>
+      (inventory?.rows || []).map((row) => {
+        const onHand = Math.max(0, inventoryOnHand[row.key] ?? row.on_hand_units);
+        const suggested = Math.max(0, row.target_stock_units - onHand);
+        const daysCover = row.run_rate_units_per_month > 0
+          ? (onHand / row.run_rate_units_per_month) * 30.4375
+          : null;
+        return {
+          ...row,
+          on_hand_units: onHand,
+          suggested_order_units: suggested,
+          days_of_cover: daysCover,
+          status: onHand <= row.reorder_point_units ? "Order now" : "Covered",
+        };
+      }),
+    [inventory, inventoryOnHand],
   );
   function updateScenario(next: number[]) {
     setScenario(next);
@@ -649,6 +746,7 @@ export default function App() {
             ["forecast", "◈", "Forecast workspace"],
             ["models", "≋", "Model performance"],
             ["demand", "▦", "Demand classifier"],
+            ["inventory", "◷", "Lead-time inventory"],
             ["data", "▤", "Data & coverage"],
           ].map(([id, icon, label]) => (
             <button
@@ -687,7 +785,9 @@ export default function App() {
                 ? "Model performance"
                 : view === "demand"
                   ? "Demand classifier"
-                  : "Data & coverage"}
+                  : view === "inventory"
+                    ? "Lead-time inventory"
+                    : "Data & coverage"}
           </span>
           <span className="connection">
             <i className={options ? "connected" : ""} />
@@ -705,7 +805,9 @@ export default function App() {
                     ? "Understand every forecast."
                     : view === "demand"
                       ? "Demand, at the item level."
-                      : "Know the data behind the plan."}
+                      : view === "inventory"
+                        ? "Plan the gap between demand and arrival."
+                        : "Know the data behind the plan."}
               </h1>
               <p>
                 {view === "forecast"
@@ -714,7 +816,9 @@ export default function App() {
                     ? "Review model availability, chronological validation, and ensemble contributions."
                     : view === "demand"
                       ? "Separate high-demand classification from the probability of an item selling."
-                      : "Source coverage, planning assumptions, and available dimensions."}
+                      : view === "inventory"
+                        ? "Translate SQL demand history into lead-time demand, safety stock, reorder points, and arrival dates."
+                        : "Source coverage, planning assumptions, and available dimensions."}
               </p>
             </div>
             <div className="heading-actions">
@@ -1307,6 +1411,158 @@ export default function App() {
                 </p>
               )}
             </section>
+          )}
+          {view === "inventory" && (
+            <>
+              <section className="panel inventory-intro">
+                <div>
+                  <span className="tag">SQL DEMAND · REPLENISHMENT</span>
+                  <h2>Plan inventory around the time supply takes to arrive.</h2>
+                  <p>
+                    Lead time runs from placing a purchase order to stock being
+                    ready to sell. This planner uses Mitsubishi sales history
+                    for demand and keeps supplier lead time and warehouse stock
+                    as visible planning inputs.
+                  </p>
+                </div>
+                <div className="inventory-source">
+                  <strong>{inventory?.source_as_of ? date(inventory.source_as_of) : "—"}</strong>
+                  <span>source as-of</span>
+                </div>
+              </section>
+              <section className="panel controls inventory-settings">
+                <div className="control">
+                  <label htmlFor="lead-time-days">Supplier lead time</label>
+                  <input
+                    id="lead-time-days"
+                    type="number"
+                    min="1"
+                    max="365"
+                    value={inventorySettings.leadTimeDays}
+                    onChange={(e) =>
+                      setInventorySettings({
+                        ...inventorySettings,
+                        leadTimeDays: Math.max(1, Math.min(365, Number(e.target.value) || 1)),
+                      })
+                    }
+                  />
+                  <small>days from PO to ready-to-use stock</small>
+                </div>
+                <div className="control">
+                  <label htmlFor="safety-stock-months">Safety stock</label>
+                  <input
+                    id="safety-stock-months"
+                    type="number"
+                    min="0"
+                    max="12"
+                    step="0.25"
+                    value={inventorySettings.safetyStockMonths}
+                    onChange={(e) =>
+                      setInventorySettings({
+                        ...inventorySettings,
+                        safetyStockMonths: Math.max(0, Math.min(12, Number(e.target.value) || 0)),
+                      })
+                    }
+                  />
+                  <small>months of demand held in reserve</small>
+                </div>
+                <div className="control">
+                  <label htmlFor="coverage-months">Forward coverage</label>
+                  <input
+                    id="coverage-months"
+                    type="number"
+                    min="0.25"
+                    max="24"
+                    step="0.25"
+                    value={inventorySettings.coverageMonths}
+                    onChange={(e) =>
+                      setInventorySettings({
+                        ...inventorySettings,
+                        coverageMonths: Math.max(0.25, Math.min(24, Number(e.target.value) || 0.25)),
+                      })
+                    }
+                  />
+                  <small>target demand covered after arrival</small>
+                </div>
+                <button className="primary" onClick={() => void loadInventory()} disabled={inventoryLoading}>
+                  {inventoryLoading ? "Updating…" : "Apply assumptions"} <span>↗</span>
+                </button>
+              </section>
+              <div className="inventory-kpis">
+                <article className="panel kpi">
+                  <span>Items needing an order</span>
+                  <div><strong>{inventoryRows.filter((row) => row.status === "Order now").length.toLocaleString()}</strong></div>
+                  <small>based on the on-hand values below</small>
+                </article>
+                <article className="panel kpi">
+                  <span>Suggested order units</span>
+                  <div><strong>{compact(inventoryRows.reduce((sum, row) => sum + row.suggested_order_units, 0))}</strong></div>
+                  <small>lead time + safety + coverage target</small>
+                </article>
+                <article className="panel kpi">
+                  <span>Source rows used</span>
+                  <div><strong>{(inventory?.source_rows || 0).toLocaleString()}</strong></div>
+                  <small>canonical Mitsubishi SQL demand rows</small>
+                </article>
+              </div>
+              <section className="panel detail-table inventory-table">
+                <div className="section-heading">
+                  <div>
+                    <h2>Replenishment queue <span className="tag">{inventoryRows.length} items</span></h2>
+                    <p>Enter current on-hand units to make the recommended order quantity and status reflect your warehouse.</p>
+                  </div>
+                  <span className={`tag ${inventory?.vendor_mapping_available ? "good" : ""}`}>
+                    {inventory?.vendor_mapping_available ? "VENDOR MAPPED" : "VENDOR MAPPING NEEDED"}
+                  </span>
+                </div>
+                {inventoryLoading && <div className="progress" role="status"><span /> Reading the SQL demand snapshot…</div>}
+                <div className="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Item / SKU</th>
+                        <th>Monthly run rate</th>
+                        <th>Demand in lead time</th>
+                        <th>Safety stock</th>
+                        <th>Reorder point</th>
+                        <th>On hand · editable</th>
+                        <th>Suggested order</th>
+                        <th>Order / arrival</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {inventoryRows.map((row) => (
+                        <tr key={row.key}>
+                          <td><strong>{row.key}</strong><small>{row.months_with_source_data} months with demand · {row.vendor || "Vendor unmapped"}</small></td>
+                          <td>{row.run_rate_units_per_month.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                          <td>{row.lead_time_demand_units.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                          <td>{row.safety_stock_units.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                          <td>{row.reorder_point_units.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                          <td>
+                            <input
+                              className="number-input"
+                              aria-label={`On hand units for ${row.key}`}
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={inventoryOnHand[row.key] ?? 0}
+                              onChange={(e) => setInventoryOnHand({ ...inventoryOnHand, [row.key]: Math.max(0, Number(e.target.value) || 0) })}
+                            />
+                          </td>
+                          <td><strong>{row.suggested_order_units.toLocaleString(undefined, { maximumFractionDigits: 1 })}</strong></td>
+                          <td><small>{date(row.order_by_date)}<br />arrives {date(row.expected_arrival_date)}</small></td>
+                          <td><span className={`tag ${row.status === "Covered" ? "good" : "status-order"}`}>{row.status}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="inventory-note">
+                  Run rate is 70% trailing three source months plus 30% trailing twelve months. The source files do not contain purchase orders, receipts, warehouse balances, or supplier lead times, so those values remain explicit planner inputs rather than hidden assumptions.
+                </p>
+              </section>
+            </>
           )}
           {view === "demand" && (
             <>

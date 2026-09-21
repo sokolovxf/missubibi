@@ -12,9 +12,12 @@ forecast-run registry and scheduled refresh.
 
 Still open: origin-safe classifier regressors inside every forecast validation
 routine (disabled); exact full notebook search parity; fitted-estimator rollback
-and production A/B routing. Actual vendor mappings must be supplied. Daily/weekly
-values remain allocated monthly estimates until native daily/weekly modeling is
-implemented.
+and production A/B routing. Actual vendor mappings, warehouse on-hand, supplier
+lead times, purchase orders, and receipts must be supplied for operational
+inventory planning. Lead-time inventory calculations are now implemented from
+the canonical SQL demand history; daily/weekly views remain conservation-safe
+allocations from monthly source totals until native daily/weekly model training
+is chosen.
 
 ---
 
