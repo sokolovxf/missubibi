@@ -72,11 +72,13 @@ def build_lead_time_plan(
     if dimension_value and dimension != "total":
         source = source.loc[source[dimension].astype("string") == dimension_value]
     if source.empty:
+        planning_date = _as_date(as_of, pd.Timestamp(date.today()))
         return {
             "status": "ok",
             "rows": [],
             "source_as_of": None,
-            "planning_start": None,
+            "planning_as_of": planning_date.strftime("%Y-%m-%d"),
+            "planning_start": (planning_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
             "source_rows": 0,
             "assumptions": {
                 "lead_time_days": lead_time_days,
@@ -89,7 +91,8 @@ def build_lead_time_plan(
 
     source["month"] = source["month"].dt.to_period("M").dt.to_timestamp()
     cutoff = source["month"].max()
-    source_as_of = _as_date(as_of, cutoff)
+    source_as_of = cutoff + pd.offsets.MonthEnd(0)
+    planning_date = _as_date(as_of, pd.Timestamp(date.today()))
     month_index = pd.date_range(cutoff - pd.DateOffset(months=11), cutoff, freq="MS")
     group_column = dimension if dimension != "total" else None
     if group_column:
@@ -121,9 +124,9 @@ def build_lead_time_plan(
         order_qty = max(0.0, target_stock - on_hand_units)
         days_cover = on_hand_units / run_rate * MONTH_DAYS if run_rate > 0 else None
         if run_rate > 0 and on_hand_units > reorder_point:
-            order_by = source_as_of + pd.to_timedelta(max(0.0, (on_hand_units - reorder_point) / run_rate * MONTH_DAYS), unit="D")
+            order_by = planning_date + pd.to_timedelta(max(0.0, (on_hand_units - reorder_point) / run_rate * MONTH_DAYS), unit="D")
         else:
-            order_by = source_as_of
+            order_by = planning_date
         arrival = order_by + pd.to_timedelta(lead_time_days, unit="D")
         rows.append(
             {
@@ -154,7 +157,8 @@ def build_lead_time_plan(
         "status": "ok",
         "rows": rows[:limit],
         "source_as_of": source_as_of.strftime("%Y-%m-%d"),
-        "planning_start": (source_as_of + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+        "planning_as_of": planning_date.strftime("%Y-%m-%d"),
+        "planning_start": (planning_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
         "source_rows": int(len(source)),
         "total_groups": len(rows),
         "vendor_mapping_available": bool(source.get("vendor", pd.Series(dtype="object")).notna().any()),

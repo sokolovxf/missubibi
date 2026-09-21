@@ -118,6 +118,7 @@ class PlanningTests(unittest.TestCase):
         result = build_lead_time_plan(frame, lead_time_days=30, safety_stock_months=1,
                                       coverage_months=2, limit=2, as_of='2024-12-31')
         self.assertEqual(result['source_as_of'], '2024-12-31')
+        self.assertEqual(result['planning_as_of'], '2024-12-31')
         self.assertEqual(result['rows'][0]['key'], 'A')
         row = result['rows'][0]
         self.assertGreater(row['lead_time_demand_units'], 0)

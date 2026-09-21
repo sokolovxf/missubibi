@@ -73,6 +73,7 @@ type InventoryPlan = {
   status: string;
   rows: InventoryRow[];
   source_as_of: string | null;
+  planning_as_of: string | null;
   planning_start: string | null;
   source_rows: number;
   total_groups: number;
@@ -1426,8 +1427,8 @@ export default function App() {
                   </p>
                 </div>
                 <div className="inventory-source">
-                  <strong>{inventory?.source_as_of ? date(inventory.source_as_of) : "—"}</strong>
-                  <span>source as-of</span>
+                  <strong>{inventory?.planning_as_of ? date(inventory.planning_as_of) : "—"}</strong>
+                  <span>planning as-of · source {inventory?.source_as_of ? date(inventory.source_as_of) : "—"}</span>
                 </div>
               </section>
               <section className="panel controls inventory-settings">
