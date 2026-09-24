@@ -26,8 +26,23 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "=== Starting Missubibi ==="
-(cd "$ROOT_DIR/backend" && uv run uvicorn app.main:app --reload --port 8100) &
-BACKEND_PID=$!
+port_in_use() {
+  lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+}
 
-cd "$ROOT_DIR/frontend"
-npm run dev
+if port_in_use 8100; then
+  echo "Backend already running on http://127.0.0.1:8100; reusing it."
+else
+  (cd "$ROOT_DIR/backend" && uv run uvicorn app.main:app --reload --port 8100) &
+  BACKEND_PID=$!
+fi
+
+if port_in_use 5174; then
+  echo "Frontend already running on http://localhost:5174; reusing it."
+  if [ -n "${BACKEND_PID:-}" ]; then
+    wait "$BACKEND_PID"
+  fi
+else
+  cd "$ROOT_DIR/frontend"
+  npm run dev
+fi

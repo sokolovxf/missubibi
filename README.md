@@ -13,6 +13,8 @@ This verifies the repository fingerprints recorded in MySQL and refreshes the
 `missubibi` database from `database/schema.sql` and `database/seed.sql` only
 when the local database is missing or stale. It then starts the backend on
 `http://127.0.0.1:8100` and the frontend on `http://localhost:5174`.
+The launcher is safe to run again: if either port is already in use, it reuses
+the running service instead of starting a duplicate process.
 
 On Windows PowerShell:
 
