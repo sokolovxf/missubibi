@@ -1,0 +1,20 @@
+{
+  "source_workbook": "DATA ORIGINAL + MERGED FILE/RawData_Combined.xlsx",
+  "source_sheet": "SalesOrderHistory",
+  "source_rows": 272000,
+  "source_date_start": "2021-04-01",
+  "source_date_end": "2025-03-31",
+  "export_period": "2025-01-01 through 2025-03-31",
+  "export_rows": 17020,
+  "line_file": "mitsubishi_sales_2025.csv",
+  "monthly_file": "mitsubishi_sales_2025_monthly.csv",
+  "line_file_sha256": "8b30b82e3bcac611a48ab982ea241f3874c487f2d579ec4ee25fbc155dbbce46",
+  "monthly_file_sha256": "b1a9981437589ab206435a01aa620270fc5c3835a1cccf56ed8af79965b4e39c",
+  "notes": [
+    "The source snapshot ends on 2025-03-31; this is the complete available 2025 slice, not a full calendar-year 2025 extract.",
+    "The line-level CSV preserves source transaction fields and normalizes the two header labels with trailing spaces.",
+    "revenue_thb in the monthly file is base price multiplied by quantity and is intended for pitch validation."
+  ],
+  "pdf_file": "dashboard-mini-guide.pdf",
+  "pdf_file_sha256": "aeeebef242c0406d0a84db516642ebdcf24f3ba0e7d1bd9dce08f172e9a2e67d"
+}
